@@ -13,6 +13,7 @@ pub enum Cell {
     Stone = 3,
     Fire = 4,
     Wood = 5,
+    Steam = 6,
 }
 
 impl Cell {
@@ -24,6 +25,7 @@ impl Cell {
             3 => Some(Cell::Stone),
             4 => Some(Cell::Fire),
             5 => Some(Cell::Wood),
+            6 => Some(Cell::Steam),
             _ => None,
         }
     }
@@ -34,7 +36,7 @@ impl Cell {
             Cell::Empty => 0,
             Cell::Water => 1,
             Cell::Sand => 2,
-            Cell::Fire => 0,
+            Cell::Fire | Cell::Steam => 0,
             Cell::Stone | Cell::Wood => 255, // immovable
         }
     }
@@ -42,6 +44,11 @@ impl Cell {
 
 /// Ticks a painted fire cell lives before it burns out.
 const FIRE_LIFETIME: u8 = 48;
+const FIRE_HEAT: u8 = 200;
+const WOOD_IGNITE: u8 = 80;
+const WATER_BOIL: u8 = 100;
+const STEAM_CONDENSE: u8 = 40;
+const STEAM_PAINT_HEAT: u8 = 120;
 const CHUNK: usize = 16;
 
 pub struct World {
@@ -50,6 +57,8 @@ pub struct World {
     cells: Vec<Cell>,
     /// Per-cell remaining lifetime. Only `Fire` uses nonzero values.
     ttl: Vec<u8>,
+    /// Per-cell heat for conduction and phase changes.
+    heat: Vec<u8>,
     /// Scratch buffer marking cells that already moved this tick.
     moved: Vec<bool>,
     /// Tiny xorshift PRNG — no external crates needed in WASM.
@@ -74,6 +83,7 @@ impl World {
             height,
             cells: vec![Cell::Empty; width * height],
             ttl: vec![0; width * height],
+            heat: vec![0; width * height],
             moved: vec![false; width * height],
             rng: 0x853c_49e6_748f_ea9b,
             frame: 0,
@@ -102,6 +112,11 @@ impl World {
     #[inline]
     pub fn ttl(&self) -> &[u8] {
         &self.ttl
+    }
+
+    #[inline]
+    pub fn heat(&self) -> &[u8] {
+        &self.heat
     }
 
     fn next_rand(&mut self) -> u64 {
@@ -138,6 +153,11 @@ impl World {
                 let i = self.idx(px, py);
                 self.cells[i] = cell;
                 self.ttl[i] = if cell == Cell::Fire { FIRE_LIFETIME } else { 0 };
+                self.heat[i] = match cell {
+                    Cell::Fire => FIRE_HEAT,
+                    Cell::Steam => STEAM_PAINT_HEAT,
+                    _ => 0,
+                };
                 self.wake(px, py, false);
             }
         }
@@ -148,6 +168,7 @@ impl World {
         let b = self.idx(x2, y2);
         self.cells.swap(a, b);
         self.ttl.swap(a, b);
+        self.heat.swap(a, b);
         self.moved[b] = true;
         self.wake(x1, y1, true);
         self.wake(x2, y2, true);
@@ -270,6 +291,7 @@ impl World {
         let i = self.idx(x, y);
         self.cells[i] = Cell::Fire;
         self.ttl[i] = FIRE_LIFETIME;
+        self.heat[i] = FIRE_HEAT;
         self.moved[i] = true;
         self.wake(x, y, true);
     }
@@ -319,6 +341,7 @@ impl World {
         let i = self.idx(x, y);
         self.cells[i] = Cell::Empty;
         self.ttl[i] = 0;
+        self.heat[i] = 0;
         self.wake(x, y, true);
     }
 
@@ -397,6 +420,11 @@ impl World {
                 return;
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn swap_for_test(&mut self, x1: usize, y1: usize, x2: usize, y2: usize) {
+        self.swap(x1, y1, x2, y2);
     }
 
     fn step_water(&mut self, x: usize, y: usize) {
@@ -656,6 +684,39 @@ mod tests {
         }
         assert_eq!(count(&w, Cell::Sand), 1);
         assert_eq!(w.get(32, 63), Cell::Sand);
+    }
+
+    #[test]
+    fn painted_steam_has_heat_120() {
+        let mut w = World::new(4, 4);
+        w.paint(1, 1, Cell::Steam, 0);
+        assert_eq!(w.get(1, 1), Cell::Steam);
+        assert_eq!(w.heat()[1 * 4 + 1], 120);
+    }
+
+    #[test]
+    fn empty_cells_have_zero_heat() {
+        let w = World::new(2, 2);
+        assert!(w.heat().iter().all(|&h| h == 0));
+        assert!(w.ttl().iter().all(|&t| t == 0));
+    }
+
+    #[test]
+    fn swap_moves_heat_with_the_cell() {
+        let mut w = World::new(4, 4);
+        w.paint(0, 0, Cell::Steam, 0);
+        assert_eq!(w.heat()[0], 120);
+        w.swap_for_test(0, 0, 1, 0);
+        assert_eq!(w.get(1, 0), Cell::Steam);
+        assert_eq!(w.heat()[1], 120);
+        assert_eq!(w.get(0, 0), Cell::Empty);
+        assert_eq!(w.heat()[0], 0);
+    }
+
+    #[test]
+    fn from_u8_maps_steam() {
+        assert_eq!(Cell::from_u8(6), Some(Cell::Steam));
+        assert_eq!(Cell::from_u8(7), None);
     }
 
     #[test]

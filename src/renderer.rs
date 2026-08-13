@@ -35,6 +35,7 @@ pub fn draw(world: &World, frame: &mut [u8]) {
                 put(frame, i, 255, 32 + t * 4, 16);
             }
             Cell::Wood => put(frame, i, 118 + j / 2, 72 + j / 2, 36),
+            Cell::Steam => put(frame, i, 216 + j / 2, 220 + j / 2, 232),
         }
     }
 }
