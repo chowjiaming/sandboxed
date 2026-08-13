@@ -130,8 +130,8 @@ impl World {
         self.frame += 1;
 
         // Bottom-to-top so falling particles don't chain-move in
-        // one tick.
-        for y in (0..self.height.saturating_sub(1)).rev() {
+        // one tick. Include the last row so floor liquids can slide.
+        for y in (0..self.height).rev() {
             // Alternate horizontal scan direction each frame to
             // prevent visible directional drift.
             let left_to_right = self.frame.is_multiple_of(2);
@@ -193,10 +193,7 @@ impl World {
 
     fn step_water(&mut self, x: usize, y: usize) {
         let below = y + 1;
-        if below >= self.height {
-            return;
-        }
-        if self.try_move(x, y, x, below) {
+        if below < self.height && self.try_move(x, y, x, below) {
             return;
         }
         let left_first = self.next_rand() & 1 == 0;
@@ -249,5 +246,136 @@ mod tests {
             w.step();
         }
         assert_eq!(w.get(2, 3), Cell::Sand);
+    }
+
+    fn count(w: &World, cell: Cell) -> usize {
+        w.cells().iter().filter(|&&c| c == cell).count()
+    }
+
+    #[test]
+    fn water_on_floor_spreads_horizontally() {
+        let mut w = World::new(8, 4);
+        w.paint(0, 3, Cell::Water, 0);
+        for _ in 0..32 {
+            w.step();
+        }
+        assert_eq!(count(&w, Cell::Water), 1);
+        assert_ne!(
+            w.get(0, 3),
+            Cell::Water,
+            "water stuck at spawn on the world floor"
+        );
+        let on_floor = (0..8).filter(|&x| w.get(x, 3) == Cell::Water).count();
+        assert_eq!(on_floor, 1);
+    }
+
+    #[test]
+    fn water_levels_out_in_a_container() {
+        let mut w = World::new(9, 6);
+        for y in 1..=4 {
+            w.paint(1, y, Cell::Stone, 0);
+            w.paint(7, y, Cell::Stone, 0);
+        }
+        for x in 1..=7 {
+            w.paint(x, 4, Cell::Stone, 0);
+        }
+        for y in 1..=3 {
+            w.paint(2, y, Cell::Water, 0);
+            w.paint(3, y, Cell::Water, 0);
+        }
+        let water0 = count(&w, Cell::Water);
+        for _ in 0..200 {
+            w.step();
+        }
+        assert_eq!(count(&w, Cell::Water), water0);
+
+        let mut heights = [0usize; 9];
+        for y in 0..4 {
+            for x in 0..9 {
+                if w.get(x, y) == Cell::Water {
+                    assert!((2..=6).contains(&x), "water escaped at ({x},{y})");
+                    heights[x] += 1;
+                }
+            }
+        }
+        let inner = &heights[2..=6];
+        let max = *inner.iter().max().unwrap();
+        let min = *inner.iter().min().unwrap();
+        assert!(
+            max - min <= 1,
+            "water column heights {inner:?} are not level"
+        );
+        assert!(min >= 1, "container did not fill across the floor");
+    }
+
+    #[test]
+    fn sand_forms_a_45_degree_pile() {
+        let mut w = World::new(15, 10);
+        let floor = 9;
+        let cx = 7;
+        for x in 0..15 {
+            w.paint(x, floor, Cell::Stone, 0);
+        }
+        for y in 0..8 {
+            w.paint(cx, y, Cell::Sand, 0);
+        }
+        for _ in 0..200 {
+            w.step();
+        }
+        assert_eq!(count(&w, Cell::Sand), 8);
+
+        let mut height = [0usize; 15];
+        for y in 0..floor {
+            for x in 0..15 {
+                if w.get(x, y) == Cell::Sand {
+                    height[x] += 1;
+                }
+            }
+        }
+        let occupied = height.iter().filter(|&&h| h > 0).count();
+        assert!(occupied > 1, "sand stayed in a column instead of piling");
+        for x in 0..14 {
+            let dh = height[x].abs_diff(height[x + 1]);
+            assert!(
+                dh <= 1,
+                "slope steeper than 45° between x={x} and x={}: {height:?}",
+                x + 1
+            );
+        }
+    }
+
+    #[test]
+    fn sand_has_no_left_right_drift_bias() {
+        let mut w = World::new(21, 12);
+        let cx = 10;
+        let floor = 11;
+        for x in 0..21 {
+            w.paint(x, floor, Cell::Stone, 0);
+        }
+        for y in 0..8 {
+            w.paint(cx, y, Cell::Sand, 0);
+        }
+        for _ in 0..1000 {
+            w.step();
+        }
+        let mut left = 0usize;
+        let mut right = 0usize;
+        for y in 0..floor {
+            for x in 0..21 {
+                if w.get(x, y) != Cell::Sand {
+                    continue;
+                }
+                match x.cmp(&cx) {
+                    std::cmp::Ordering::Less => left += 1,
+                    std::cmp::Ordering::Greater => right += 1,
+                    std::cmp::Ordering::Equal => {}
+                }
+            }
+        }
+        let diff = left.abs_diff(right);
+        assert!(
+            diff <= 1,
+            "left={left} right={right} drifted after 1000 ticks"
+        );
     }
 }
