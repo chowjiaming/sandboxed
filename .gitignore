@@ -6,3 +6,6 @@ node_modules
 AGENTS.md
 DESIGN.md
 TASKS.md
+docs/
+.agents
+skills-lock.json
