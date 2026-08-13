@@ -821,6 +821,23 @@ mod tests {
     }
 
     #[test]
+    fn heating_wood_stays_active_across_chunks() {
+        let mut w = World::new(64, 64);
+        w.paint(40, 40, Cell::Wood, 0);
+        w.paint(39, 40, Cell::Fire, 0);
+        w.step();
+        let hi = 40 * 64 + 40;
+        assert!(
+            w.heat()[hi] > 0 || w.get(40, 40) == Cell::Fire,
+            "wood in a sparse world did not receive heat (chunk slept)"
+        );
+        for _ in 0..8 {
+            w.step();
+        }
+        assert_ne!(w.get(40, 40), Cell::Wood);
+    }
+
+    #[test]
     fn water_at_boil_becomes_steam() {
         let mut w = World::new(4, 4);
         w.paint(1, 1, Cell::Water, 0);
