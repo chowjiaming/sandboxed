@@ -45,9 +45,7 @@ impl Cell {
 /// Ticks a painted fire cell lives before it burns out.
 const FIRE_LIFETIME: u8 = 48;
 const FIRE_HEAT: u8 = 200;
-#[expect(dead_code)]
 const WOOD_IGNITE: u8 = 80;
-#[expect(dead_code)]
 const WATER_BOIL: u8 = 100;
 #[expect(dead_code)]
 const STEAM_CONDENSE: u8 = 40;
@@ -118,7 +116,7 @@ impl World {
     }
 
     #[inline]
-    #[expect(dead_code)]
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn heat(&self) -> &[u8] {
         &self.heat
     }
@@ -300,13 +298,36 @@ impl World {
         self.wake(x, y, true);
     }
 
-    fn has_adjacent_wood(&self, x: usize, y: usize) -> bool {
-        self.for_each_cardinal(x, y, |cell| cell == Cell::Wood)
+    #[inline]
+    fn add_heat(&mut self, x: usize, y: usize, amount: u8) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let i = self.idx(x, y);
+        if self.cells[i] == Cell::Empty {
+            return;
+        }
+        self.heat[i] = self.heat[i].saturating_add(amount);
+        self.wake(x, y, true);
+        match self.cells[i] {
+            Cell::Wood if self.heat[i] >= WOOD_IGNITE => self.ignite(x, y),
+            Cell::Water if self.heat[i] >= WATER_BOIL => {
+                self.cells[i] = Cell::Steam;
+                self.ttl[i] = 0;
+            }
+            _ => {}
+        }
     }
 
-    fn try_ignite_neighbors(&mut self, x: usize, y: usize) {
+    #[inline]
+    fn conduct(&mut self, x: usize, y: usize) {
         const DIRS: [(isize, isize); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        let i = self.idx(x, y);
         for (dx, dy) in DIRS {
+            let src = self.heat[i];
+            if src == 0 {
+                return;
+            }
             let nx = x as isize + dx;
             let ny = y as isize + dy;
             if nx < 0 || ny < 0 {
@@ -316,10 +337,22 @@ impl World {
             if nx >= self.width || ny >= self.height {
                 continue;
             }
-            if self.get(nx, ny) == Cell::Wood && self.next_rand().is_multiple_of(10) {
-                self.ignite(nx, ny);
+            if self.get(nx, ny) == Cell::Empty {
+                continue;
             }
+            let ni = self.idx(nx, ny);
+            let dst = self.heat[ni];
+            if src <= dst {
+                continue;
+            }
+            let give = ((src - dst) / 4).max(1);
+            self.heat[i] = self.heat[i].saturating_sub(give);
+            self.add_heat(nx, ny, give);
         }
+    }
+
+    fn has_adjacent_wood(&self, x: usize, y: usize) -> bool {
+        self.for_each_cardinal(x, y, |cell| cell == Cell::Wood)
     }
 
     fn for_each_cardinal(&self, x: usize, y: usize, mut pred: impl FnMut(Cell) -> bool) -> bool {
@@ -351,8 +384,9 @@ impl World {
 
     fn step_fire(&mut self, x: usize, y: usize) {
         self.wake(x, y, true);
-        self.try_ignite_neighbors(x, y);
         let i = self.idx(x, y);
+        self.heat[i] = FIRE_HEAT;
+        self.conduct(x, y);
         let life = self.ttl[i];
         if life <= 1 {
             self.extinguish(x, y);
@@ -661,6 +695,22 @@ mod tests {
             w.step();
         }
         assert_eq!(w.get(4, 2), Cell::Wood);
+    }
+
+    #[test]
+    fn wood_ignites_when_heat_reaches_threshold() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 4, Cell::Wood, 0);
+        w.paint(3, 4, Cell::Fire, 0);
+        for _ in 0..8 {
+            w.step();
+        }
+        assert_ne!(
+            w.get(4, 4),
+            Cell::Wood,
+            "wood did not ignite from conducted heat"
+        );
+        assert_eq!(count(&w, Cell::Wood), 0);
     }
 
     #[test]
