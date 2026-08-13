@@ -115,7 +115,6 @@ impl World {
     }
 
     #[inline]
-    #[cfg_attr(not(test), expect(dead_code))]
     pub fn heat(&self) -> &[u8] {
         &self.heat
     }
