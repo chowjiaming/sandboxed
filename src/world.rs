@@ -12,6 +12,7 @@ pub enum Cell {
     Water = 2,
     Stone = 3,
     Fire = 4,
+    Wood = 5,
 }
 
 impl Cell {
@@ -22,6 +23,7 @@ impl Cell {
             2 => Some(Cell::Water),
             3 => Some(Cell::Stone),
             4 => Some(Cell::Fire),
+            5 => Some(Cell::Wood),
             _ => None,
         }
     }
@@ -33,7 +35,7 @@ impl Cell {
             Cell::Water => 1,
             Cell::Sand => 2,
             Cell::Fire => 0,
-            Cell::Stone => 255, // immovable
+            Cell::Stone | Cell::Wood => 255, // immovable
         }
     }
 }
@@ -114,9 +116,9 @@ impl World {
                 if px >= self.width || py >= self.height {
                     continue;
                 }
-                // Don't overwrite stone with loose material (eraser can).
+                // Don't overwrite stone or wood with loose material (eraser can).
                 let existing = self.get(px, py);
-                if existing == Cell::Stone && cell != Cell::Empty {
+                if matches!(existing, Cell::Stone | Cell::Wood) && cell != Cell::Empty {
                     continue;
                 }
                 let i = self.idx(px, py);
@@ -171,6 +173,54 @@ impl World {
         }
     }
 
+    fn ignite(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        self.cells[i] = Cell::Fire;
+        self.ttl[i] = FIRE_LIFETIME;
+        self.moved[i] = true;
+    }
+
+    fn has_adjacent_wood(&self, x: usize, y: usize) -> bool {
+        self.for_each_cardinal(x, y, |cell| cell == Cell::Wood)
+    }
+
+    fn try_ignite_neighbors(&mut self, x: usize, y: usize) {
+        const DIRS: [(isize, isize); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        for (dx, dy) in DIRS {
+            let nx = x as isize + dx;
+            let ny = y as isize + dy;
+            if nx < 0 || ny < 0 {
+                continue;
+            }
+            let (nx, ny) = (nx as usize, ny as usize);
+            if nx >= self.width || ny >= self.height {
+                continue;
+            }
+            if self.get(nx, ny) == Cell::Wood && self.next_rand().is_multiple_of(10) {
+                self.ignite(nx, ny);
+            }
+        }
+    }
+
+    fn for_each_cardinal(&self, x: usize, y: usize, mut pred: impl FnMut(Cell) -> bool) -> bool {
+        const DIRS: [(isize, isize); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        for (dx, dy) in DIRS {
+            let nx = x as isize + dx;
+            let ny = y as isize + dy;
+            if nx < 0 || ny < 0 {
+                continue;
+            }
+            let (nx, ny) = (nx as usize, ny as usize);
+            if nx >= self.width || ny >= self.height {
+                continue;
+            }
+            if pred(self.get(nx, ny)) {
+                return true;
+            }
+        }
+        false
+    }
+
     fn extinguish(&mut self, x: usize, y: usize) {
         let i = self.idx(x, y);
         self.cells[i] = Cell::Empty;
@@ -178,6 +228,7 @@ impl World {
     }
 
     fn step_fire(&mut self, x: usize, y: usize) {
+        self.try_ignite_neighbors(x, y);
         let i = self.idx(x, y);
         let life = self.ttl[i];
         if life <= 1 {
@@ -190,6 +241,10 @@ impl World {
             return;
         }
         self.ttl[i] = life - 1;
+        // Stay put while there is fuel so a flame doesn't float off a wall.
+        if self.has_adjacent_wood(x, y) {
+            return;
+        }
         if y == 0 {
             return;
         }
@@ -468,5 +523,31 @@ mod tests {
         w.step();
         assert_eq!(w.get(4, 4), Cell::Fire);
         assert_eq!(w.get(4, 5), Cell::Empty);
+    }
+
+    #[test]
+    fn wood_is_static() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 2, Cell::Wood, 0);
+        for _ in 0..16 {
+            w.step();
+        }
+        assert_eq!(w.get(4, 2), Cell::Wood);
+    }
+
+    #[test]
+    fn wood_block_burns_within_n_ticks() {
+        let mut w = World::new(8, 8);
+        for x in 3..=5 {
+            for y in 3..=5 {
+                w.paint(x, y, Cell::Wood, 0);
+            }
+        }
+        w.paint(2, 4, Cell::Fire, 0);
+        assert_eq!(count(&w, Cell::Wood), 9);
+        for _ in 0..2000 {
+            w.step();
+        }
+        assert_eq!(count(&w, Cell::Wood), 0, "wood block did not fully burn");
     }
 }
