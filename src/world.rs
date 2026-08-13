@@ -47,7 +47,6 @@ const FIRE_LIFETIME: u8 = 48;
 const FIRE_HEAT: u8 = 200;
 const WOOD_IGNITE: u8 = 80;
 const WATER_BOIL: u8 = 100;
-#[expect(dead_code)]
 const STEAM_CONDENSE: u8 = 40;
 const STEAM_PAINT_HEAT: u8 = 120;
 const CHUNK: usize = 16;
@@ -279,6 +278,7 @@ impl World {
                             Cell::Sand => self.step_sand(x, y),
                             Cell::Water => self.step_water(x, y),
                             Cell::Fire => self.step_fire(x, y),
+                            Cell::Steam => self.step_steam(x, y),
                             _ => {}
                         }
                     }
@@ -426,6 +426,42 @@ impl World {
         self.ttl[i] = life - 1;
         // Stay put while there is fuel so a flame doesn't float off a wall.
         if self.has_adjacent_wood(x, y) {
+            return;
+        }
+        if y == 0 {
+            return;
+        }
+        let above = y - 1;
+        if self.try_move(x, y, x, above) {
+            return;
+        }
+        let left_first = self.next_rand() & 1 == 0;
+        let diagonals: [(isize, usize); 2] = [(-1, above), (1, above)];
+        for k in 0..2 {
+            let (dx, ny) = diagonals[if left_first { k } else { 1 - k }];
+            let nx = x as isize + dx;
+            if nx < 0 {
+                continue;
+            }
+            if self.try_move(x, y, nx as usize, ny) {
+                return;
+            }
+        }
+    }
+
+    fn step_steam(&mut self, x: usize, y: usize) {
+        self.wake(x, y, true);
+        let i = self.idx(x, y);
+        self.heat[i] = self.heat[i].saturating_sub(1);
+        self.conduct(x, y);
+        let i = self.idx(x, y);
+        if self.cells[i] != Cell::Steam {
+            return;
+        }
+        if self.heat[i] < STEAM_CONDENSE {
+            self.cells[i] = Cell::Water;
+            self.ttl[i] = 0;
+            self.wake(x, y, true);
             return;
         }
         if y == 0 {
@@ -840,6 +876,35 @@ mod tests {
     fn from_u8_maps_steam() {
         assert_eq!(Cell::from_u8(6), Some(Cell::Steam));
         assert_eq!(Cell::from_u8(7), None);
+    }
+
+    #[test]
+    fn steam_rises() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 5, Cell::Steam, 0);
+        w.step();
+        assert_eq!(w.get(4, 4), Cell::Steam);
+        assert_eq!(w.get(4, 5), Cell::Empty);
+        assert_eq!(w.heat()[4 * 8 + 4], 119);
+        assert_eq!(w.heat()[4 * 8 + 5], 0);
+    }
+
+    #[test]
+    fn steam_condenses_when_heat_drops() {
+        let mut w = World::new(4, 4);
+        w.paint(1, 1, Cell::Steam, 0);
+        // 120 -> 39 takes 81 cools; isolated steam only loses 1/tick.
+        for _ in 0..81 {
+            w.step();
+        }
+        assert_eq!(count(&w, Cell::Steam), 0);
+        assert_eq!(count(&w, Cell::Water), 1);
+        let wi = w
+            .cells()
+            .iter()
+            .position(|&c| c == Cell::Water)
+            .expect("water");
+        assert!(w.heat()[wi] < STEAM_CONDENSE);
     }
 
     #[test]
