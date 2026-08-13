@@ -73,7 +73,10 @@ mod tests {
         let mut frame = vec![0u8; 4];
         draw(&world, &mut frame);
         let (r, g, b) = (frame[0], frame[1], frame[2]);
-        assert!(r > 180 && g > 180 && b > 180, "expected pale steam, got {r},{g},{b}");
+        assert!(
+            r > 180 && g > 180 && b > 180,
+            "expected pale steam, got {r},{g},{b}"
+        );
         assert_eq!(frame[3], 255);
     }
 
