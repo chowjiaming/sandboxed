@@ -45,8 +45,11 @@ impl Cell {
 /// Ticks a painted fire cell lives before it burns out.
 const FIRE_LIFETIME: u8 = 48;
 const FIRE_HEAT: u8 = 200;
+#[expect(dead_code)]
 const WOOD_IGNITE: u8 = 80;
+#[expect(dead_code)]
 const WATER_BOIL: u8 = 100;
+#[expect(dead_code)]
 const STEAM_CONDENSE: u8 = 40;
 const STEAM_PAINT_HEAT: u8 = 120;
 const CHUNK: usize = 16;
@@ -115,6 +118,7 @@ impl World {
     }
 
     #[inline]
+    #[expect(dead_code)]
     pub fn heat(&self) -> &[u8] {
         &self.heat
     }
