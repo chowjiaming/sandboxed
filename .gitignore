@@ -1,0 +1,8 @@
+/target
+/pkg
+node_modules
+*.log
+.DS_Store
+AGENTS.md
+DESIGN.md
+TASKS.md

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sandboxed — Rust + WASM falling sand</title>
+    <style>
+      body {
+        margin: 0;
+        background: #0b0b10;
+        color: #ddd;
+        font-family: system-ui, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 16px;
+      }
+      canvas {
+        image-rendering: pixelated;
+        border: 1px solid #333;
+        cursor: crosshair;
+      }
+      #palette {
+        display: flex;
+        gap: 8px;
+      }
+      #palette button {
+        padding: 6px 14px;
+        border: 1px solid #444;
+        background: #1a1a24;
+        color: #ddd;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      #palette button.active {
+        border-color: #e0c060;
+        background: #2a2a1a;
+      }
+      #fps {
+        font-variant-numeric: tabular-nums;
+        opacity: 0.7;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Sandboxed</h1>
+    <div id="palette">
+      <button data-mat="1" class="active">Sand</button>
+      <button data-mat="2">Water</button>
+      <button data-mat="3">Stone</button>
+      <button data-mat="0">Erase</button>
+      <button id="clear">Clear</button>
+    </div>
+    <canvas id="view"></canvas>
+    <div id="fps"></div>
+
+    <script type="module">
+      import init, { Simulation } from "./pkg/sandboxed.js";
+
+      const W = 320;
+      const H = 200;
+      const SCALE = 3;
+      const BRUSH = 3;
+
+      const wasm = await init();
+
+      const sim = new Simulation(W, H);
+      const canvas = document.getElementById("view");
+      canvas.width = W;
+      canvas.height = H;
+      canvas.style.width = `${W * SCALE}px`;
+      canvas.style.height = `${H * SCALE}px`;
+      const ctx = canvas.getContext("2d");
+
+      let material = 1;
+      document
+        .querySelectorAll("#palette button[data-mat]")
+        .forEach((btn) => {
+          btn.addEventListener("click", () => {
+            material = Number(btn.dataset.mat);
+            document
+              .querySelectorAll("#palette button")
+              .forEach((b) => b.classList.remove("active"));
+            btn.classList.add("active");
+          });
+        });
+      document
+        .getElementById("clear")
+        .addEventListener("click", () => sim.clear());
+
+      let painting = false;
+      const toGrid = (e) => {
+        const r = canvas.getBoundingClientRect();
+        return [
+          Math.floor(((e.clientX - r.left) / r.width) * W),
+          Math.floor(((e.clientY - r.top) / r.height) * H),
+        ];
+      };
+      canvas.addEventListener("pointerdown", (e) => {
+        painting = true;
+        const [x, y] = toGrid(e);
+        sim.paint(x, y, material, BRUSH);
+      });
+      canvas.addEventListener("pointermove", (e) => {
+        if (!painting) return;
+        const [x, y] = toGrid(e);
+        sim.paint(x, y, material, BRUSH);
+      });
+      window.addEventListener("pointerup", () => (painting = false));
+
+      const fpsEl = document.getElementById("fps");
+      let frames = 0;
+      let last = performance.now();
+
+      function loop() {
+        sim.tick();
+
+        // Re-create the view every frame: memory.buffer is
+        // invalidated if WASM memory grows.
+        const pixels = new Uint8ClampedArray(
+          wasm.memory.buffer,
+          sim.frame_ptr(),
+          W * H * 4,
+        );
+        ctx.putImageData(new ImageData(pixels, W, H), 0, 0);
+
+        frames++;
+        const now = performance.now();
+        if (now - last >= 500) {
+          fpsEl.textContent = `${Math.round(
+            (frames * 1000) / (now - last),
+          )} fps`;
+          frames = 0;
+          last = now;
+        }
+        requestAnimationFrame(loop);
+      }
+
+      loop();
+    </script>
+  </body>
+</html>
