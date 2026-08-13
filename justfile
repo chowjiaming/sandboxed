@@ -30,6 +30,10 @@ serve: build
 verify: lint test build
     @echo "All checks passed."
 
+# Native step-rate at 960×600 (sparse vs dense)
+bench:
+    cargo test --release bench_960x600_step_rate -- --ignored --nocapture
+
 # Remove build artifacts (target/ and pkg/)
 clean:
     cargo clean
