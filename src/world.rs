@@ -374,6 +374,25 @@ impl World {
         false
     }
 
+    fn first_cardinal(&self, x: usize, y: usize, want: Cell) -> Option<(usize, usize)> {
+        const DIRS: [(isize, isize); 4] = [(0, -1), (0, 1), (-1, 0), (1, 0)];
+        for (dx, dy) in DIRS {
+            let nx = x as isize + dx;
+            let ny = y as isize + dy;
+            if nx < 0 || ny < 0 {
+                continue;
+            }
+            let (nx, ny) = (nx as usize, ny as usize);
+            if nx >= self.width || ny >= self.height {
+                continue;
+            }
+            if self.get(nx, ny) == want {
+                return Some((nx, ny));
+            }
+        }
+        None
+    }
+
     fn extinguish(&mut self, x: usize, y: usize) {
         let i = self.idx(x, y);
         self.cells[i] = Cell::Empty;
@@ -384,6 +403,13 @@ impl World {
 
     fn step_fire(&mut self, x: usize, y: usize) {
         self.wake(x, y, true);
+        if let Some((wx, wy)) = self.first_cardinal(x, y, Cell::Water) {
+            let wi = self.idx(wx, wy);
+            let bump = WATER_BOIL.saturating_sub(self.heat[wi]);
+            self.add_heat(wx, wy, bump);
+            self.extinguish(x, y);
+            return;
+        }
         let i = self.idx(x, y);
         self.heat[i] = FIRE_HEAT;
         self.conduct(x, y);
@@ -461,11 +487,29 @@ impl World {
     }
 
     #[cfg(test)]
+    pub(crate) fn add_heat_for_test(&mut self, x: usize, y: usize, amount: u8) {
+        self.add_heat(x, y, amount);
+    }
+
+    #[cfg(test)]
     pub(crate) fn swap_for_test(&mut self, x1: usize, y1: usize, x2: usize, y2: usize) {
         self.swap(x1, y1, x2, y2);
     }
 
     fn step_water(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        if self.heat[i] > 0 {
+            self.conduct(x, y);
+            if self.get(x, y) != Cell::Water {
+                return;
+            }
+        }
+        if let Some((fx, fy)) = self.first_cardinal(x, y, Cell::Fire) {
+            let bump = WATER_BOIL.saturating_sub(self.heat[i]);
+            self.add_heat(x, y, bump);
+            self.extinguish(fx, fy);
+            return;
+        }
         let below = y + 1;
         if below < self.height && self.try_move(x, y, x, below) {
             return;
@@ -738,6 +782,31 @@ mod tests {
         }
         assert_eq!(count(&w, Cell::Sand), 1);
         assert_eq!(w.get(32, 63), Cell::Sand);
+    }
+
+    #[test]
+    fn water_at_boil_becomes_steam() {
+        let mut w = World::new(4, 4);
+        w.paint(1, 1, Cell::Water, 0);
+        w.add_heat_for_test(1, 1, WATER_BOIL);
+        assert_eq!(w.get(1, 1), Cell::Steam);
+        assert!(w.heat()[1 * 4 + 1] >= WATER_BOIL);
+    }
+
+    #[test]
+    fn fire_touching_water_extinguishes_and_boils() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 4, Cell::Water, 0);
+        w.paint(3, 4, Cell::Fire, 0);
+        w.step();
+        assert_eq!(count(&w, Cell::Fire), 0, "fire survived contact with water");
+        assert_eq!(count(&w, Cell::Steam), 1);
+        let steam_i = w
+            .cells()
+            .iter()
+            .position(|&c| c == Cell::Steam)
+            .expect("steam");
+        assert!(w.heat()[steam_i] >= WATER_BOIL);
     }
 
     #[test]
