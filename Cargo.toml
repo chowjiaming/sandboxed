@@ -3,6 +3,13 @@ name = "sandboxed"
 version = "0.1.0"
 edition = "2021"
 description = "A falling-sand cellular automaton compiled to WebAssembly"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/chowjiaming/sandboxed"
+homepage = "https://chowjiaming.github.io/sandboxed/"
+authors = ["Joseph Chow <contact@josephchow.dev>"]
+keywords = ["wasm", "falling-sand", "cellular-automata", "simulation"]
+categories = ["wasm", "graphics", "simulation"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
