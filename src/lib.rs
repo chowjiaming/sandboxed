@@ -26,6 +26,11 @@ impl Simulation {
     /// Advance one tick and re-render into the frame buffer.
     pub fn tick(&mut self) {
         self.world.step();
+        self.redraw();
+    }
+
+    /// Re-render without stepping. Used while the UI is paused.
+    pub fn redraw(&mut self) {
         renderer::draw(&self.world, &mut self.frame);
     }
 
@@ -53,5 +58,28 @@ impl Simulation {
 
     pub fn clear(&mut self) {
         self.world = World::new(self.world.width, self.world.height);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame_bytes(sim: &Simulation) -> Vec<u8> {
+        let n = sim.width() * sim.height() * 4;
+        // SAFETY: frame_ptr is sim.frame.as_ptr(); sim outlives this slice.
+        unsafe { std::slice::from_raw_parts(sim.frame_ptr(), n).to_vec() }
+    }
+
+    #[test]
+    fn redraw_does_not_advance_the_world() {
+        let mut sim = Simulation::new(4, 4);
+        sim.paint(1, 0, 1, 0);
+        sim.redraw();
+        let paused = frame_bytes(&sim);
+        sim.redraw();
+        assert_eq!(paused, frame_bytes(&sim));
+        sim.tick();
+        assert_ne!(paused, frame_bytes(&sim));
     }
 }

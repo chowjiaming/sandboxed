@@ -24,6 +24,9 @@ unit-testable with plain `cargo test`.
 | Input        | Action                                      |
 | ------------ | ------------------------------------------- |
 | Click / drag | Paint the selected material                 |
+| Brush slider | Radius 1–8                                  |
+| Pause / Step | Freeze the sim; advance one tick            |
+| Space / `.`  | Pause toggle / single-step                  |
 | Sand         | Falls and piles; sinks through water        |
 | Water        | Flows and spreads                           |
 | Stone        | Static obstacle                             |

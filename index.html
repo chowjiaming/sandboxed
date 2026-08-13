@@ -40,22 +40,42 @@
         image-rendering: pixelated;
         border: 1px solid #333;
         cursor: crosshair;
+        touch-action: none;
       }
-      #palette {
+      .bar {
         display: flex;
+        flex-wrap: wrap;
         gap: 8px;
+        align-items: center;
+        justify-content: center;
       }
-      #palette button {
-        padding: 6px 14px;
+      button {
+        padding: 6px 12px;
         border: 1px solid #444;
         background: #1a1a24;
         color: #ddd;
         border-radius: 6px;
         cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
       }
-      #palette button.active {
+      button.active {
         border-color: #e0c060;
         background: #2a2a1a;
+      }
+      .swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 2px;
+        border: 1px solid #0006;
+        flex-shrink: 0;
+      }
+      label.brush {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
       }
       #fps {
         font-variant-numeric: tabular-nums;
@@ -65,13 +85,34 @@
   </head>
   <body>
     <h1>Sandboxed</h1>
-    <div id="palette">
-      <button data-mat="1" class="active">Sand</button>
-      <button data-mat="2">Water</button>
-      <button data-mat="3">Stone</button>
-      <button data-mat="4">Fire</button>
-      <button data-mat="5">Wood</button>
-      <button data-mat="0">Erase</button>
+    <div class="bar" id="palette">
+      <button data-mat="1" class="active">
+        <span class="swatch" style="background: #c2a860"></span>Sand
+      </button>
+      <button data-mat="2">
+        <span class="swatch" style="background: #285ac8"></span>Water
+      </button>
+      <button data-mat="3">
+        <span class="swatch" style="background: #6e6e76"></span>Stone
+      </button>
+      <button data-mat="4">
+        <span class="swatch" style="background: #ff7820"></span>Fire
+      </button>
+      <button data-mat="5">
+        <span class="swatch" style="background: #764824"></span>Wood
+      </button>
+      <button data-mat="0">
+        <span class="swatch" style="background: #1a1a24"></span>Erase
+      </button>
+    </div>
+    <div class="bar">
+      <label class="brush">
+        Brush
+        <input id="brush" type="range" min="1" max="8" value="3" />
+        <span id="brush-val">3</span>
+      </label>
+      <button id="pause" aria-pressed="false">Pause</button>
+      <button id="step">Step</button>
       <button id="clear">Clear</button>
     </div>
     <canvas id="view"></canvas>
@@ -83,7 +124,6 @@
       const W = 320;
       const H = 200;
       const SCALE = 3;
-      const BRUSH = 3;
 
       const wasm = await init();
 
@@ -96,6 +136,10 @@
       const ctx = canvas.getContext("2d");
 
       let material = 1;
+      let brush = 3;
+      let paused = false;
+      let pendingStep = false;
+
       document
         .querySelectorAll("#palette button[data-mat]")
         .forEach((btn) => {
@@ -107,9 +151,40 @@
             btn.classList.add("active");
           });
         });
-      document
-        .getElementById("clear")
-        .addEventListener("click", () => sim.clear());
+
+      const brushInput = document.getElementById("brush");
+      const brushVal = document.getElementById("brush-val");
+      brushInput.addEventListener("input", () => {
+        brush = Number(brushInput.value);
+        brushVal.textContent = String(brush);
+      });
+
+      const pauseBtn = document.getElementById("pause");
+      const setPaused = (next) => {
+        paused = next;
+        pauseBtn.classList.toggle("active", paused);
+        pauseBtn.setAttribute("aria-pressed", String(paused));
+        pauseBtn.textContent = paused ? "Resume" : "Pause";
+      };
+      pauseBtn.addEventListener("click", () => setPaused(!paused));
+      document.getElementById("step").addEventListener("click", () => {
+        setPaused(true);
+        pendingStep = true;
+      });
+      document.getElementById("clear").addEventListener("click", () => {
+        sim.clear();
+      });
+
+      window.addEventListener("keydown", (e) => {
+        if (e.target instanceof HTMLInputElement) return;
+        if (e.code === "Space") {
+          e.preventDefault();
+          setPaused(!paused);
+        } else if (e.code === "Period") {
+          setPaused(true);
+          pendingStep = true;
+        }
+      });
 
       let painting = false;
       const toGrid = (e) => {
@@ -119,25 +194,27 @@
           Math.floor(((e.clientY - r.top) / r.height) * H),
         ];
       };
+      const paintAt = (e) => {
+        const [x, y] = toGrid(e);
+        sim.paint(x, y, material, brush);
+      };
       canvas.addEventListener("pointerdown", (e) => {
         painting = true;
-        const [x, y] = toGrid(e);
-        sim.paint(x, y, material, BRUSH);
+        canvas.setPointerCapture(e.pointerId);
+        paintAt(e);
       });
       canvas.addEventListener("pointermove", (e) => {
         if (!painting) return;
-        const [x, y] = toGrid(e);
-        sim.paint(x, y, material, BRUSH);
+        paintAt(e);
       });
-      window.addEventListener("pointerup", () => (painting = false));
+      canvas.addEventListener("pointerup", () => (painting = false));
+      canvas.addEventListener("pointercancel", () => (painting = false));
 
       const fpsEl = document.getElementById("fps");
       let frames = 0;
       let last = performance.now();
 
-      function loop() {
-        sim.tick();
-
+      function blit() {
         // Re-create the view every frame: memory.buffer is
         // invalidated if WASM memory grows.
         const pixels = new Uint8ClampedArray(
@@ -146,13 +223,23 @@
           W * H * 4,
         );
         ctx.putImageData(new ImageData(pixels, W, H), 0, 0);
+      }
+
+      function loop() {
+        if (!paused || pendingStep) {
+          sim.tick();
+          pendingStep = false;
+        } else {
+          sim.redraw();
+        }
+        blit();
 
         frames++;
         const now = performance.now();
         if (now - last >= 500) {
-          fpsEl.textContent = `${Math.round(
-            (frames * 1000) / (now - last),
-          )} fps`;
+          fpsEl.textContent = paused
+            ? "paused"
+            : `${Math.round((frames * 1000) / (now - last))} fps`;
           frames = 0;
           last = now;
         }
