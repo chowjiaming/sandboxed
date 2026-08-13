@@ -30,9 +30,10 @@ unit-testable with plain `cargo test`.
 | Sand         | Falls and piles; sinks through water        |
 | Water        | Flows and spreads                           |
 | Stone        | Static obstacle                             |
-| Fire         | Rises, flickers, burns out                  |
-| Wood         | Static; ignites from adjacent fire          |
-| Erase / Clear | Remove cells                               |
+| Fire         | Rises, flickers, burns out; heats neighbors             |
+| Wood         | Static; ignites when heat reaches 80                    |
+| Steam        | Rises; condenses when cool; water boils next to fire    |
+| Erase / Clear | Remove cells                                           |
 
 ## Quickstart
 
