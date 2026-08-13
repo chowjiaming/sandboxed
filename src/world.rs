@@ -42,6 +42,7 @@ impl Cell {
 
 /// Ticks a painted fire cell lives before it burns out.
 const FIRE_LIFETIME: u8 = 48;
+const CHUNK: usize = 16;
 
 pub struct World {
     pub width: usize,
@@ -55,10 +56,19 @@ pub struct World {
     rng: u64,
     /// Frame counter; used to alternate scan direction and avoid bias.
     frame: u64,
+    chunks_x: usize,
+    chunks_y: usize,
+    /// Chunks to process this tick.
+    active: Vec<bool>,
+    /// Chunks woken by motion this tick; becomes `active` after the step.
+    next_active: Vec<bool>,
 }
 
 impl World {
     pub fn new(width: usize, height: usize) -> Self {
+        let chunks_x = width.div_ceil(CHUNK);
+        let chunks_y = height.div_ceil(CHUNK);
+        let nchunks = chunks_x * chunks_y;
         Self {
             width,
             height,
@@ -67,6 +77,10 @@ impl World {
             moved: vec![false; width * height],
             rng: 0x853c_49e6_748f_ea9b,
             frame: 0,
+            chunks_x,
+            chunks_y,
+            active: vec![false; nchunks],
+            next_active: vec![false; nchunks],
         }
     }
 
@@ -124,6 +138,7 @@ impl World {
                 let i = self.idx(px, py);
                 self.cells[i] = cell;
                 self.ttl[i] = if cell == Cell::Fire { FIRE_LIFETIME } else { 0 };
+                self.wake(px, py, false);
             }
         }
     }
@@ -134,6 +149,8 @@ impl World {
         self.cells.swap(a, b);
         self.ttl.swap(a, b);
         self.moved[b] = true;
+        self.wake(x1, y1, true);
+        self.wake(x2, y2, true);
     }
 
     /// Can `mover` displace `target`? Empty always; denser sinks
@@ -142,35 +159,111 @@ impl World {
         target == Cell::Empty || (target != Cell::Stone && mover.density() > target.density())
     }
 
-    /// Advance the simulation by one tick.
-    pub fn step(&mut self) {
-        self.moved.fill(false);
-        self.frame += 1;
+    #[inline]
+    fn chunk_i(&self, cx: usize, cy: usize) -> usize {
+        cy * self.chunks_x + cx
+    }
 
-        // Bottom-to-top so falling particles don't chain-move in
-        // one tick. Include the last row so floor liquids can slide.
-        for y in (0..self.height).rev() {
-            // Alternate horizontal scan direction each frame to
-            // prevent visible directional drift.
-            let left_to_right = self.frame.is_multiple_of(2);
-            for xi in 0..self.width {
-                let x = if left_to_right {
-                    xi
-                } else {
-                    self.width - 1 - xi
-                };
-                let i = self.idx(x, y);
-                if self.moved[i] {
+    fn wake_into(buf: &mut [bool], chunks_x: usize, chunks_y: usize, x: usize, y: usize) {
+        let cx = x / CHUNK;
+        let cy = y / CHUNK;
+        for dy in -1isize..=1 {
+            for dx in -1isize..=1 {
+                let ncx = cx as isize + dx;
+                let ncy = cy as isize + dy;
+                if ncx < 0 || ncy < 0 {
                     continue;
                 }
-                match self.cells[i] {
-                    Cell::Sand => self.step_sand(x, y),
-                    Cell::Water => self.step_water(x, y),
-                    Cell::Fire => self.step_fire(x, y),
-                    _ => {}
+                let (ncx, ncy) = (ncx as usize, ncy as usize);
+                if ncx >= chunks_x || ncy >= chunks_y {
+                    continue;
+                }
+                buf[ncy * chunks_x + ncx] = true;
+            }
+        }
+    }
+
+    fn wake(&mut self, x: usize, y: usize, next: bool) {
+        let chunks_x = self.chunks_x;
+        let chunks_y = self.chunks_y;
+        if next {
+            Self::wake_into(&mut self.next_active, chunks_x, chunks_y, x, y);
+        } else {
+            Self::wake_into(&mut self.active, chunks_x, chunks_y, x, y);
+        }
+    }
+
+    fn clear_moved_in_active_chunks(&mut self) {
+        for cy in 0..self.chunks_y {
+            for cx in 0..self.chunks_x {
+                if !self.active[self.chunk_i(cx, cy)] {
+                    continue;
+                }
+                let x0 = cx * CHUNK;
+                let x1 = ((cx + 1) * CHUNK).min(self.width);
+                let y0 = cy * CHUNK;
+                let y1 = ((cy + 1) * CHUNK).min(self.height);
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let i = self.idx(x, y);
+                        self.moved[i] = false;
+                    }
                 }
             }
         }
+    }
+
+    /// Advance the simulation by one tick.
+    pub fn step(&mut self) {
+        self.frame += 1;
+        self.clear_moved_in_active_chunks();
+        self.next_active.fill(false);
+
+        let left_to_right = self.frame.is_multiple_of(2);
+        for cy in (0..self.chunks_y).rev() {
+            let mut any = false;
+            for cx in 0..self.chunks_x {
+                if self.active[self.chunk_i(cx, cy)] {
+                    any = true;
+                    break;
+                }
+            }
+            if !any {
+                continue;
+            }
+            let y0 = cy * CHUNK;
+            let y1 = ((cy + 1) * CHUNK).min(self.height);
+            for y in (y0..y1).rev() {
+                for cxi in 0..self.chunks_x {
+                    let cx = if left_to_right {
+                        cxi
+                    } else {
+                        self.chunks_x - 1 - cxi
+                    };
+                    if !self.active[self.chunk_i(cx, cy)] {
+                        continue;
+                    }
+                    let x0 = cx * CHUNK;
+                    let x1 = ((cx + 1) * CHUNK).min(self.width);
+                    let span = x1 - x0;
+                    for xi in 0..span {
+                        let x = if left_to_right { x0 + xi } else { x1 - 1 - xi };
+                        let i = self.idx(x, y);
+                        if self.moved[i] {
+                            continue;
+                        }
+                        match self.cells[i] {
+                            Cell::Sand => self.step_sand(x, y),
+                            Cell::Water => self.step_water(x, y),
+                            Cell::Fire => self.step_fire(x, y),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        std::mem::swap(&mut self.active, &mut self.next_active);
+        self.next_active.fill(false);
     }
 
     fn ignite(&mut self, x: usize, y: usize) {
@@ -178,6 +271,7 @@ impl World {
         self.cells[i] = Cell::Fire;
         self.ttl[i] = FIRE_LIFETIME;
         self.moved[i] = true;
+        self.wake(x, y, true);
     }
 
     fn has_adjacent_wood(&self, x: usize, y: usize) -> bool {
@@ -225,9 +319,11 @@ impl World {
         let i = self.idx(x, y);
         self.cells[i] = Cell::Empty;
         self.ttl[i] = 0;
+        self.wake(x, y, true);
     }
 
     fn step_fire(&mut self, x: usize, y: usize) {
+        self.wake(x, y, true);
         self.try_ignite_neighbors(x, y);
         let i = self.idx(x, y);
         let life = self.ttl[i];
@@ -549,5 +645,51 @@ mod tests {
             w.step();
         }
         assert_eq!(count(&w, Cell::Wood), 0, "wood block did not fully burn");
+    }
+
+    #[test]
+    fn sparse_sand_grain_falls_across_chunks() {
+        let mut w = World::new(64, 64);
+        w.paint(32, 0, Cell::Sand, 0);
+        for _ in 0..128 {
+            w.step();
+        }
+        assert_eq!(count(&w, Cell::Sand), 1);
+        assert_eq!(w.get(32, 63), Cell::Sand);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_960x600_step_rate() {
+        use std::time::Instant;
+        const W: usize = 960;
+        const H: usize = 600;
+        const STEPS: u32 = 300;
+
+        let mut sparse = World::new(W, H);
+        sparse.paint(W / 2, 0, Cell::Sand, 0);
+        let t = Instant::now();
+        for _ in 0..STEPS {
+            sparse.step();
+        }
+        let sparse_s = t.elapsed().as_secs_f64();
+
+        let mut full = World::new(W, H);
+        for x in (0..W).step_by(2) {
+            for y in 0..H / 4 {
+                full.paint(x, y, Cell::Sand, 0);
+            }
+        }
+        let t = Instant::now();
+        for _ in 0..STEPS {
+            full.step();
+        }
+        let full_s = t.elapsed().as_secs_f64();
+
+        println!(
+            "960×600 native step rate ({STEPS} steps):\n  sparse 1 grain: {:.0} steps/s\n  dense top-quarter: {:.0} steps/s",
+            STEPS as f64 / sparse_s,
+            STEPS as f64 / full_s,
+        );
     }
 }

@@ -45,6 +45,21 @@ just verify         # fmt, clippy, tests, wasm-pack — same as CI
 
 Pushes to `main` run that suite and deploy the site to GitHub Pages.
 
+## Performance
+
+Native `World::step()` at 960×600, release, 300 ticks
+(`just bench`):
+
+| Scene              | Before chunks | After chunks |
+| ------------------ | ------------- | ------------ |
+| Sparse (1 grain)   | 1,014 steps/s | 16,303 steps/s (~16×) |
+| Dense (top quarter)| 833 steps/s   | 604 steps/s  |
+
+Sparse worlds skip idle 16×16 chunks. A full grid still visits
+every active chunk, so dense scenes are not faster. The live demo
+stays at 320×200; these numbers are simulation throughput, not
+browser composite FPS.
+
 ## Layout
 
 | File              | Role                                  |
