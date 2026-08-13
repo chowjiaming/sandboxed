@@ -30,6 +30,27 @@ pub fn draw(world: &World, frame: &mut [u8]) {
             Cell::Sand => put(frame, i, 194 + j, 168 + j, 96 + j / 2),
             Cell::Water => put(frame, i, 40, 90 + j, 200 + j),
             Cell::Stone => put(frame, i, 110 + j / 2, 110 + j / 2, 118),
+            Cell::Fire => {
+                let t = world.ttl()[i] as i16;
+                put(frame, i, 255, 32 + t * 4, 16);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::{Cell, World};
+
+    #[test]
+    fn fire_pixels_are_orange_red() {
+        let mut world = World::new(2, 1);
+        world.paint(0, 0, Cell::Fire, 0);
+        let mut frame = vec![0u8; 8];
+        draw(&world, &mut frame);
+        let (r, g, b) = (frame[0], frame[1], frame[2]);
+        assert!(r > g && g > b, "expected orange/red, got {r},{g},{b}");
+        assert_eq!(frame[3], 255);
     }
 }

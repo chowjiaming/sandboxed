@@ -11,6 +11,7 @@ pub enum Cell {
     Sand = 1,
     Water = 2,
     Stone = 3,
+    Fire = 4,
 }
 
 impl Cell {
@@ -20,6 +21,7 @@ impl Cell {
             1 => Some(Cell::Sand),
             2 => Some(Cell::Water),
             3 => Some(Cell::Stone),
+            4 => Some(Cell::Fire),
             _ => None,
         }
     }
@@ -30,15 +32,21 @@ impl Cell {
             Cell::Empty => 0,
             Cell::Water => 1,
             Cell::Sand => 2,
+            Cell::Fire => 0,
             Cell::Stone => 255, // immovable
         }
     }
 }
 
+/// Ticks a painted fire cell lives before it burns out.
+const FIRE_LIFETIME: u8 = 48;
+
 pub struct World {
     pub width: usize,
     pub height: usize,
     cells: Vec<Cell>,
+    /// Per-cell remaining lifetime. Only `Fire` uses nonzero values.
+    ttl: Vec<u8>,
     /// Scratch buffer marking cells that already moved this tick.
     moved: Vec<bool>,
     /// Tiny xorshift PRNG — no external crates needed in WASM.
@@ -53,6 +61,7 @@ impl World {
             width,
             height,
             cells: vec![Cell::Empty; width * height],
+            ttl: vec![0; width * height],
             moved: vec![false; width * height],
             rng: 0x853c_49e6_748f_ea9b,
             frame: 0,
@@ -72,6 +81,11 @@ impl World {
     #[inline]
     pub fn cells(&self) -> &[Cell] {
         &self.cells
+    }
+
+    #[inline]
+    pub fn ttl(&self) -> &[u8] {
+        &self.ttl
     }
 
     fn next_rand(&mut self) -> u64 {
@@ -107,6 +121,7 @@ impl World {
                 }
                 let i = self.idx(px, py);
                 self.cells[i] = cell;
+                self.ttl[i] = if cell == Cell::Fire { FIRE_LIFETIME } else { 0 };
             }
         }
     }
@@ -115,6 +130,7 @@ impl World {
         let a = self.idx(x1, y1);
         let b = self.idx(x2, y2);
         self.cells.swap(a, b);
+        self.ttl.swap(a, b);
         self.moved[b] = true;
     }
 
@@ -148,8 +164,49 @@ impl World {
                 match self.cells[i] {
                     Cell::Sand => self.step_sand(x, y),
                     Cell::Water => self.step_water(x, y),
+                    Cell::Fire => self.step_fire(x, y),
                     _ => {}
                 }
+            }
+        }
+    }
+
+    fn extinguish(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        self.cells[i] = Cell::Empty;
+        self.ttl[i] = 0;
+    }
+
+    fn step_fire(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        let life = self.ttl[i];
+        if life <= 1 {
+            self.extinguish(x, y);
+            return;
+        }
+        // Flicker: extra chance to die near the end of life.
+        if life <= 4 && self.next_rand() & 7 == 0 {
+            self.extinguish(x, y);
+            return;
+        }
+        self.ttl[i] = life - 1;
+        if y == 0 {
+            return;
+        }
+        let above = y - 1;
+        if self.try_move(x, y, x, above) {
+            return;
+        }
+        let left_first = self.next_rand() & 1 == 0;
+        let diagonals: [(isize, usize); 2] = [(-1, above), (1, above)];
+        for k in 0..2 {
+            let (dx, ny) = diagonals[if left_first { k } else { 1 - k }];
+            let nx = x as isize + dx;
+            if nx < 0 {
+                continue;
+            }
+            if self.try_move(x, y, nx as usize, ny) {
+                return;
             }
         }
     }
@@ -377,5 +434,39 @@ mod tests {
             diff <= 1,
             "left={left} right={right} drifted after 1000 ticks"
         );
+    }
+
+    #[test]
+    fn fire_does_not_fall() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 3, Cell::Fire, 0);
+        for _ in 0..32 {
+            w.step();
+            for y in 4..8 {
+                for x in 0..8 {
+                    assert_ne!(w.get(x, y), Cell::Fire, "fire fell to ({x},{y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fire_eventually_disappears() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 3, Cell::Fire, 0);
+        assert_eq!(w.get(4, 3), Cell::Fire);
+        for _ in 0..256 {
+            w.step();
+        }
+        assert_eq!(count(&w, Cell::Fire), 0);
+    }
+
+    #[test]
+    fn fire_rises() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 5, Cell::Fire, 0);
+        w.step();
+        assert_eq!(w.get(4, 4), Cell::Fire);
+        assert_eq!(w.get(4, 5), Cell::Empty);
     }
 }
