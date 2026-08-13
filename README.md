@@ -8,10 +8,10 @@ WebAssembly, and rendered in the browser.
 
 **[Live demo](https://chowjiaming.github.io/sandboxed/)**
 
-Paint sand, water, and stone onto a 320×200 grid. The simulation
-runs in WASM: a flat `Vec<Cell>`, no per-frame allocation, and a
-thin `wasm-bindgen` boundary so the core stays unit-testable with
-plain `cargo test`.
+Paint sand, water, stone, and fire onto a 320×200 grid. The
+simulation runs in WASM: a flat `Vec<Cell>`, no per-frame
+allocation, and a thin `wasm-bindgen` boundary so the core stays
+unit-testable with plain `cargo test`.
 
 ## Why Rust → WASM
 
@@ -27,6 +27,7 @@ plain `cargo test`.
 | Sand         | Falls and piles; sinks through water        |
 | Water        | Flows and spreads                           |
 | Stone        | Static obstacle                             |
+| Fire         | Rises, flickers, burns out                  |
 | Erase / Clear | Remove cells                               |
 
 ## Quickstart

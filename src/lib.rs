@@ -44,7 +44,7 @@ impl Simulation {
         self.world.height
     }
 
-    /// Paint `material` (0=erase, 1=sand, 2=water, 3=stone) at (x, y).
+    /// Paint `material` (0=erase, 1=sand, 2=water, 3=stone, 4=fire) at (x, y).
     pub fn paint(&mut self, x: usize, y: usize, material: u8, radius: usize) {
         if let Some(cell) = Cell::from_u8(material) {
             self.world.paint(x, y, cell, radius);
