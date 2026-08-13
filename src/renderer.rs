@@ -34,6 +34,7 @@ pub fn draw(world: &World, frame: &mut [u8]) {
                 let t = world.ttl()[i] as i16;
                 put(frame, i, 255, 32 + t * 4, 16);
             }
+            Cell::Wood => put(frame, i, 118 + j / 2, 72 + j / 2, 36),
         }
     }
 }

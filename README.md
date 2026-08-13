@@ -8,7 +8,7 @@ WebAssembly, and rendered in the browser.
 
 **[Live demo](https://chowjiaming.github.io/sandboxed/)**
 
-Paint sand, water, stone, and fire onto a 320×200 grid. The
+Paint sand, water, stone, fire, and wood onto a 320×200 grid. The
 simulation runs in WASM: a flat `Vec<Cell>`, no per-frame
 allocation, and a thin `wasm-bindgen` boundary so the core stays
 unit-testable with plain `cargo test`.
@@ -28,6 +28,7 @@ unit-testable with plain `cargo test`.
 | Water        | Flows and spreads                           |
 | Stone        | Static obstacle                             |
 | Fire         | Rises, flickers, burns out                  |
+| Wood         | Static; ignites from adjacent fire          |
 | Erase / Clear | Remove cells                               |
 
 ## Quickstart
