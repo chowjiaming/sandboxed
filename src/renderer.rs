@@ -57,6 +57,13 @@ pub fn draw(world: &World, frame: &mut [u8]) {
                 let (r, g, b) = warm(216 + j / 2, 220 + j / 2, 232, h);
                 put(frame, i, r, g, b);
             }
+            Cell::FanRight | Cell::FanLeft | Cell::FanUp | Cell::FanDown => {
+                put(frame, i, 90, 110, 140);
+            }
+            Cell::Gunpowder => {
+                let (r, g, b) = warm(40 + j / 2, 36 + j / 2, 32, h);
+                put(frame, i, r, g, b);
+            }
         }
     }
 }

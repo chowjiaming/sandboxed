@@ -14,6 +14,11 @@ pub enum Cell {
     Fire = 4,
     Wood = 5,
     Steam = 6,
+    FanRight = 7,
+    FanLeft = 8,
+    FanUp = 9,
+    FanDown = 10,
+    Gunpowder = 11,
 }
 
 impl Cell {
@@ -26,6 +31,11 @@ impl Cell {
             4 => Some(Cell::Fire),
             5 => Some(Cell::Wood),
             6 => Some(Cell::Steam),
+            7 => Some(Cell::FanRight),
+            8 => Some(Cell::FanLeft),
+            9 => Some(Cell::FanUp),
+            10 => Some(Cell::FanDown),
+            11 => Some(Cell::Gunpowder),
             _ => None,
         }
     }
@@ -35,10 +45,25 @@ impl Cell {
         match self {
             Cell::Empty => 0,
             Cell::Water => 1,
-            Cell::Sand => 2,
+            Cell::Gunpowder | Cell::Sand => 2,
             Cell::Fire | Cell::Steam => 0,
-            Cell::Stone | Cell::Wood => 255, // immovable
+            Cell::Stone | Cell::Wood | Cell::FanRight | Cell::FanLeft | Cell::FanUp | Cell::FanDown => {
+                255
+            }
         }
+    }
+
+    #[inline]
+    fn is_fan(self) -> bool {
+        matches!(
+            self,
+            Cell::FanRight | Cell::FanLeft | Cell::FanUp | Cell::FanDown
+        )
+    }
+
+    #[inline]
+    fn is_locked(self) -> bool {
+        matches!(self, Cell::Stone | Cell::Wood) || self.is_fan()
     }
 }
 
@@ -145,9 +170,9 @@ impl World {
                 if px >= self.width || py >= self.height {
                     continue;
                 }
-                // Don't overwrite stone or wood with loose material (eraser can).
+                // Don't overwrite locked cells with loose material (eraser can).
                 let existing = self.get(px, py);
-                if matches!(existing, Cell::Stone | Cell::Wood) && cell != Cell::Empty {
+                if existing.is_locked() && cell != Cell::Empty {
                     continue;
                 }
                 let i = self.idx(px, py);
@@ -891,7 +916,26 @@ mod tests {
     #[test]
     fn from_u8_maps_steam() {
         assert_eq!(Cell::from_u8(6), Some(Cell::Steam));
-        assert_eq!(Cell::from_u8(7), None);
+    }
+
+    #[test]
+    fn from_u8_maps_fans_and_gunpowder() {
+        assert_eq!(Cell::from_u8(7), Some(Cell::FanRight));
+        assert_eq!(Cell::from_u8(8), Some(Cell::FanLeft));
+        assert_eq!(Cell::from_u8(9), Some(Cell::FanUp));
+        assert_eq!(Cell::from_u8(10), Some(Cell::FanDown));
+        assert_eq!(Cell::from_u8(11), Some(Cell::Gunpowder));
+        assert_eq!(Cell::from_u8(12), None);
+    }
+
+    #[test]
+    fn paint_cannot_overwrite_fan_except_eraser() {
+        let mut w = World::new(4, 4);
+        w.paint(1, 1, Cell::FanRight, 0);
+        w.paint(1, 1, Cell::Sand, 0);
+        assert_eq!(w.get(1, 1), Cell::FanRight);
+        w.paint(1, 1, Cell::Empty, 0);
+        assert_eq!(w.get(1, 1), Cell::Empty);
     }
 
     #[test]
