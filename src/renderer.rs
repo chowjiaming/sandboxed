@@ -70,6 +70,22 @@ pub fn draw(world: &World, frame: &mut [u8]) {
                 let (r, g, b) = warm(40 + j / 2, 36 + j / 2, 32, h);
                 put(frame, i, r, g, b);
             }
+            Cell::Smoke => {
+                let (r, g, b) = warm(96 + j / 2, 96 + j / 2, 100, h);
+                put(frame, i, r, g, b);
+            }
+            Cell::Oil => {
+                let (r, g, b) = warm(180 + j / 2, 110 + j / 3, 24, h);
+                put(frame, i, r, g, b);
+            }
+            Cell::Ice => {
+                let (r, g, b) = warm(180 + j / 3, 220 + j / 2, 240, h);
+                put(frame, i, r, g, b);
+            }
+            Cell::Glass => {
+                let (r, g, b) = warm(90 + j / 2, 110 + j / 3, 88, h);
+                put(frame, i, r, g, b);
+            }
         }
     }
 }

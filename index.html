@@ -25,6 +25,13 @@
     />
     <title>Sandboxed — Rust + WASM falling sand</title>
     <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
       body {
         margin: 0;
         background: #0b0b10;
@@ -33,24 +40,44 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 12px;
-        padding: 16px;
+        gap: 6px;
+        padding: 8px 10px 6px;
+        min-height: 100dvh;
       }
-      canvas {
-        image-rendering: pixelated;
-        border: 1px solid #333;
-        cursor: crosshair;
-        touch-action: none;
+      h1 {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 650;
+        letter-spacing: 0.02em;
       }
-      .bar {
+      #palette {
         display: flex;
         flex-wrap: wrap;
-        gap: 8px;
-        align-items: center;
+        gap: 6px 12px;
+        align-items: flex-end;
         justify-content: center;
+        max-width: 980px;
+      }
+      .group {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .group-label {
+        font-size: 10px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #888;
+        padding-left: 2px;
+      }
+      .group-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        align-items: center;
       }
       button {
-        padding: 6px 12px;
+        padding: 4px 8px;
         border: 1px solid #444;
         background: #1a1a24;
         color: #ddd;
@@ -59,60 +86,302 @@
         display: inline-flex;
         align-items: center;
         gap: 6px;
+        font-size: 13px;
+      }
+      button:hover {
+        border-color: #666;
+      }
+      button:focus {
+        outline: none;
+      }
+      button:focus-visible {
+        outline: 2px solid #e0c060;
+        outline-offset: 1px;
       }
       button.active {
         border-color: #e0c060;
         background: #2a2a1a;
       }
+      button.fan {
+        padding: 4px 7px;
+        min-width: 1.9rem;
+        justify-content: center;
+        font-size: 14px;
+      }
       .swatch {
-        width: 12px;
-        height: 12px;
+        width: 11px;
+        height: 11px;
         border-radius: 2px;
         border: 1px solid #0006;
         flex-shrink: 0;
       }
+      .bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        justify-content: center;
+      }
       label.brush {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        font-size: 14px;
+        gap: 6px;
+        font-size: 13px;
+      }
+      #stage {
+        position: relative;
+        flex: 1 1 auto;
+        width: 100%;
+        min-height: 120px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #stage.paused #view {
+        filter: brightness(0.62);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #stage.paused #view {
+          filter: none;
+        }
+      }
+      #playfield {
+        position: relative;
+        line-height: 0;
+      }
+      #view,
+      #ghost {
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+      #view {
+        border: 1px solid #333;
+        cursor: crosshair;
+        touch-action: none;
+        display: block;
+      }
+      #ghost {
+        position: absolute;
+        left: 0;
+        top: 0;
+        pointer-events: none;
+      }
+      .overlay {
+        position: absolute;
+        background: #0b0b10cc;
+        border: 1px solid #555;
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-size: 12px;
+        pointer-events: none;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+      }
+      #paused-badge {
+        display: none;
+        top: 10px;
+        left: 50%;
+        transform: translateX(-50%);
+      }
+      #stage.paused #paused-badge {
+        display: block;
+      }
+      #probe {
+        left: 8px;
+        bottom: 8px;
+        max-width: calc(100% - 16px);
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       #fps {
-        font-variant-numeric: tabular-nums;
-        opacity: 0.7;
+        right: 8px;
+        bottom: 8px;
+        opacity: 0.85;
+      }
+      #empty-hint,
+      #shortcuts,
+      #loading {
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        white-space: normal;
+        text-align: center;
+        max-width: 90%;
+        line-height: 1.4;
+        pointer-events: none;
+      }
+      #shortcuts {
+        pointer-events: none;
+        display: none;
+      }
+      #shortcuts.open {
+        display: block;
+      }
+      #empty-hint {
+        display: none;
+      }
+      #empty-hint.show {
+        display: block;
+      }
+      #loading {
+        z-index: 2;
       }
     </style>
   </head>
   <body>
     <h1>Sandboxed</h1>
-    <div class="bar" id="palette">
-      <button data-mat="1" class="active">
-        <span class="swatch" style="background: #c2a860"></span>Sand
-      </button>
-      <button data-mat="2">
-        <span class="swatch" style="background: #285ac8"></span>Water
-      </button>
-      <button data-mat="3">
-        <span class="swatch" style="background: #6e6e76"></span>Stone
-      </button>
-      <button data-mat="4">
-        <span class="swatch" style="background: #ff7820"></span>Fire
-      </button>
-      <button data-mat="5">
-        <span class="swatch" style="background: #764824"></span>Wood
-      </button>
-      <button data-mat="6">
-        <span class="swatch" style="background: #d8dce8"></span>Steam
-      </button>
-      <button id="fan" data-mat="7">
-        <span class="swatch" style="background: #5a6e96"></span>Fan →
-      </button>
-      <button data-mat="11">
-        <span class="swatch" style="background: #28241e"></span>Gunpowder
-      </button>
-      <button data-mat="0">
-        <span class="swatch" style="background: #1a1a24"></span>Erase
-      </button>
+    <div id="palette">
+      <div class="group">
+        <span class="group-label">Powder</span>
+        <div class="group-row">
+          <button
+            data-mat="1"
+            class="active"
+            aria-pressed="true"
+            title="Falls and piles; sinks through water (1)"
+          >
+            <span class="swatch" style="background: #c2a860"></span>Sand
+          </button>
+          <button
+            data-mat="11"
+            aria-pressed="false"
+            title="Falls like sand; explodes from fire or heat 80 (8)"
+          >
+            <span class="swatch" style="background: #28241e"></span>Gunpowder
+          </button>
+        </div>
+      </div>
+      <div class="group">
+        <span class="group-label">Liquid</span>
+        <div class="group-row">
+          <button
+            data-mat="2"
+            aria-pressed="false"
+            title="Flows and spreads; boils at heat 100 (2)"
+          >
+            <span class="swatch" style="background: #285ac8"></span>Water
+          </button>
+          <button
+            data-mat="13"
+            aria-pressed="false"
+            title="Floats on water; ignites from fire or heat 60 (O)"
+          >
+            <span class="swatch" style="background: #b46e18"></span>Oil
+          </button>
+        </div>
+      </div>
+      <div class="group">
+        <span class="group-label">Gas</span>
+        <div class="group-row">
+          <button
+            data-mat="4"
+            aria-pressed="false"
+            title="Rises, flickers, burns out; heats neighbors (4)"
+          >
+            <span class="swatch" style="background: #ff7820"></span>Fire
+          </button>
+          <button
+            data-mat="6"
+            aria-pressed="false"
+            title="Rises; condenses when cool (6)"
+          >
+            <span class="swatch" style="background: #d8dce8"></span>Steam
+          </button>
+          <button
+            data-mat="12"
+            aria-pressed="false"
+            title="Rises slower than steam; leftover from burned-out fire (9)"
+          >
+            <span class="swatch" style="background: #606064"></span>Smoke
+          </button>
+        </div>
+      </div>
+      <div class="group">
+        <span class="group-label">Solid</span>
+        <div class="group-row">
+          <button
+            data-mat="3"
+            aria-pressed="false"
+            title="Static obstacle; blocks air (3)"
+          >
+            <span class="swatch" style="background: #6e6e76"></span>Stone
+          </button>
+          <button
+            data-mat="5"
+            aria-pressed="false"
+            title="Static; ignites when heat reaches 80 (5)"
+          >
+            <span class="swatch" style="background: #764824"></span>Wood
+          </button>
+          <button
+            data-mat="14"
+            aria-pressed="false"
+            title="Static; melts to water at heat 25 (I)"
+          >
+            <span class="swatch" style="background: #b4dcf0"></span>Ice
+          </button>
+          <button
+            data-mat="15"
+            aria-pressed="false"
+            title="Sand baked at heat 180; locked like stone (G)"
+          >
+            <span class="swatch" style="background: #5a6e58"></span>Glass
+          </button>
+        </div>
+      </div>
+      <div class="group">
+        <span class="group-label">Fan</span>
+        <div class="group-row" id="fans">
+          <button
+            class="fan"
+            data-mat="7"
+            aria-pressed="false"
+            title="Blows gases right in this 4×4 (→)"
+            aria-label="Fan right"
+          >
+            →
+          </button>
+          <button
+            class="fan"
+            data-mat="8"
+            aria-pressed="false"
+            title="Blows gases left in this 4×4 (←)"
+            aria-label="Fan left"
+          >
+            ←
+          </button>
+          <button
+            class="fan"
+            data-mat="9"
+            aria-pressed="false"
+            title="Blows gases up in this 4×4 (↑)"
+            aria-label="Fan up"
+          >
+            ↑
+          </button>
+          <button
+            class="fan"
+            data-mat="10"
+            aria-pressed="false"
+            title="Blows gases down in this 4×4 (↓)"
+            aria-label="Fan down"
+          >
+            ↓
+          </button>
+        </div>
+      </div>
+      <div class="group">
+        <span class="group-label">Tool</span>
+        <div class="group-row">
+          <button
+            data-mat="0"
+            aria-pressed="false"
+            title="Erase cells; right-click also erases (0)"
+          >
+            <span class="swatch" style="background: #1a1a24"></span>Erase
+          </button>
+        </div>
+      </div>
     </div>
     <div class="bar">
       <label class="brush">
@@ -121,66 +390,199 @@
         <span id="brush-val">3</span>
       </label>
       <button id="pause" aria-pressed="false">Pause</button>
-      <button id="step">Step</button>
+      <button id="step" title="Advance one tick">Step</button>
       <button id="clear">Clear</button>
+      <button id="help" title="Keyboard shortcuts" aria-pressed="false">?</button>
+      <span class="group-label">Scenes</span>
+      <span id="scenes" class="group-row">
+        <button data-scene="sink" title="Sand sinks through water">Sink</button>
+        <button data-scene="float" title="Oil floats on water">Float</button>
+        <button data-scene="burn" title="Wood burns to smoke">Burn</button>
+        <button data-scene="wind" title="Fan blows steam">Wind</button>
+        <button data-scene="glass" title="Fire bakes sand into glass">Glass</button>
+      </span>
     </div>
-    <canvas id="view"></canvas>
-    <div id="fps"></div>
+    <div id="stage">
+      <div id="loading" class="overlay">Loading WASM…</div>
+      <div id="playfield" hidden>
+        <canvas id="view"></canvas>
+        <canvas id="ghost"></canvas>
+        <div id="paused-badge" class="overlay">paused · press Space</div>
+        <div id="probe" class="overlay">—</div>
+        <div id="fps" class="overlay"></div>
+        <div id="empty-hint" class="overlay">Paint, or pick a scene</div>
+        <div id="shortcuts" class="overlay">
+          Drag to paint · Shift-drag straight · right-click erase · 1–9 / 0 / O
+          I G select · [ ] or scroll brush · arrows fan facing · Space pause ·
+          . step
+        </div>
+      </div>
+    </div>
 
     <script type="module">
       import init, { Simulation } from "./pkg/sandboxed.js";
 
       const W = 320;
       const H = 200;
-      const SCALE = 3;
+      const NAMES = [
+        "Empty",
+        "Sand",
+        "Water",
+        "Stone",
+        "Fire",
+        "Wood",
+        "Steam",
+        "Fan →",
+        "Fan ←",
+        "Fan ↑",
+        "Fan ↓",
+        "Gunpowder",
+        "Smoke",
+        "Oil",
+        "Ice",
+        "Glass",
+      ];
+      const SWATCH = {
+        0: "#888888",
+        1: "#c2a860",
+        2: "#285ac8",
+        3: "#6e6e76",
+        4: "#ff7820",
+        5: "#764824",
+        6: "#d8dce8",
+        7: "#5a6e96",
+        8: "#5a6e96",
+        9: "#5a6e96",
+        10: "#5a6e96",
+        11: "#28241e",
+        12: "#606064",
+        13: "#b46e18",
+        14: "#b4dcf0",
+        15: "#5a6e58",
+      };
+      const KEY_MAT = {
+        Digit1: 1,
+        Digit2: 2,
+        Digit3: 3,
+        Digit4: 4,
+        Digit5: 5,
+        Digit6: 6,
+        Digit7: 7,
+        Digit8: 11,
+        Digit9: 12,
+        Digit0: 0,
+        KeyO: 13,
+        KeyI: 14,
+        KeyG: 15,
+      };
+      const FAN_ARROWS = {
+        ArrowRight: 7,
+        ArrowLeft: 8,
+        ArrowUp: 9,
+        ArrowDown: 10,
+      };
 
       const wasm = await init();
-
       const sim = new Simulation(W, H);
       const canvas = document.getElementById("view");
+      const ghost = document.getElementById("ghost");
+      const stage = document.getElementById("stage");
+      const playfield = document.getElementById("playfield");
+      const loading = document.getElementById("loading");
+      const probeEl = document.getElementById("probe");
+      const fpsEl = document.getElementById("fps");
+      const emptyHint = document.getElementById("empty-hint");
+      const shortcuts = document.getElementById("shortcuts");
+      const helpBtn = document.getElementById("help");
       canvas.width = W;
       canvas.height = H;
-      canvas.style.width = `${W * SCALE}px`;
-      canvas.style.height = `${H * SCALE}px`;
+      ghost.width = W;
+      ghost.height = H;
       const ctx = canvas.getContext("2d");
+      const gctx = ghost.getContext("2d");
+
+      loading.remove();
+      playfield.hidden = false;
 
       let material = 1;
+      let lastFan = 7;
       let brush = 3;
       let paused = false;
       let pendingStep = false;
+      let painting = false;
+      let erasing = false;
+      let lastX = 0;
+      let lastY = 0;
+      let originX = 0;
+      let originY = 0;
+      let hover = null;
+      let shiftHeld = false;
+      let frames = 0;
+      let ticks = 0;
+      let lastHud = performance.now();
 
-      const FAN_MATS = [7, 8, 9, 10];
-      const FAN_LABELS = ["Fan →", "Fan ←", "Fan ↑", "Fan ↓"];
-      const fanBtn = document.getElementById("fan");
-
-      const setActive = (btn) => {
-        document
-          .querySelectorAll("#palette button")
-          .forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
+      const markDirty = () => {
+        emptyHint.classList.remove("show");
+        hideShortcuts();
       };
 
-      document
-        .querySelectorAll("#palette button[data-mat]")
-        .forEach((btn) => {
-          btn.addEventListener("click", () => {
-            if (btn === fanBtn && Number(fanBtn.dataset.mat) === material) {
-              const i = FAN_MATS.indexOf(material);
-              const n = (i + 1) % 4;
-              fanBtn.dataset.mat = String(FAN_MATS[n]);
-              fanBtn.innerHTML = `<span class="swatch" style="background: #5a6e96"></span>${FAN_LABELS[n]}`;
-            }
-            material = Number(btn.dataset.mat);
-            setActive(btn);
-          });
+      const hideShortcuts = () => {
+        shortcuts.classList.remove("open");
+        helpBtn.setAttribute("aria-pressed", "false");
+      };
+
+      const showShortcuts = () => {
+        shortcuts.classList.add("open");
+        helpBtn.setAttribute("aria-pressed", "true");
+      };
+
+      showShortcuts();
+      window.setTimeout(() => {
+        if (shortcuts.classList.contains("open")) {
+          hideShortcuts();
+        }
+      }, 8000);
+
+      const fitCanvas = () => {
+        const raw = Math.min(stage.clientWidth / W, stage.clientHeight / H);
+        const scale = raw < 1 ? raw : Math.max(1, Math.floor(raw));
+        const cssW = `${W * scale}px`;
+        const cssH = `${H * scale}px`;
+        canvas.style.width = cssW;
+        canvas.style.height = cssH;
+        ghost.style.width = cssW;
+        ghost.style.height = cssH;
+      };
+      fitCanvas();
+      window.addEventListener("resize", fitCanvas);
+
+      const setActive = (mat) => {
+        material = mat;
+        if (mat >= 7 && mat <= 10) {
+          lastFan = mat;
+        }
+        document.querySelectorAll("#palette button[data-mat]").forEach((b) => {
+          const on = Number(b.dataset.mat) === mat;
+          b.classList.toggle("active", on);
+          b.setAttribute("aria-pressed", String(on));
         });
+      };
+
+      document.querySelectorAll("#palette button[data-mat]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          setActive(Number(btn.dataset.mat));
+        });
+      });
 
       const brushInput = document.getElementById("brush");
       const brushVal = document.getElementById("brush-val");
-      brushInput.addEventListener("input", () => {
-        brush = Number(brushInput.value);
+      const setBrush = (next) => {
+        brush = Math.min(8, Math.max(1, next));
+        brushInput.value = String(brush);
         brushVal.textContent = String(brush);
-      });
+        drawGhost();
+      };
+      brushInput.addEventListener("input", () => setBrush(Number(brushInput.value)));
 
       const pauseBtn = document.getElementById("pause");
       const setPaused = (next) => {
@@ -188,6 +590,7 @@
         pauseBtn.classList.toggle("active", paused);
         pauseBtn.setAttribute("aria-pressed", String(paused));
         pauseBtn.textContent = paused ? "Resume" : "Pause";
+        stage.classList.toggle("paused", paused);
       };
       pauseBtn.addEventListener("click", () => setPaused(!paused));
       document.getElementById("step").addEventListener("click", () => {
@@ -195,21 +598,121 @@
         pendingStep = true;
       });
       document.getElementById("clear").addEventListener("click", () => {
-        sim.clear();
+        if (window.confirm("Clear the world?")) {
+          sim.clear();
+          sim.redraw();
+          hideShortcuts();
+          emptyHint.classList.add("show");
+        }
       });
-
-      window.addEventListener("keydown", (e) => {
-        if (e.target instanceof HTMLInputElement) return;
-        if (e.code === "Space") {
-          e.preventDefault();
-          setPaused(!paused);
-        } else if (e.code === "Period") {
-          setPaused(true);
-          pendingStep = true;
+      helpBtn.addEventListener("click", () => {
+        if (shortcuts.classList.contains("open")) {
+          hideShortcuts();
+        } else {
+          showShortcuts();
         }
       });
 
-      let painting = false;
+      const SCENES = {
+        sink: () => {
+          sim.fill_rect(90, 130, 140, 4, 3);
+          sim.fill_rect(90, 90, 4, 44, 3);
+          sim.fill_rect(226, 90, 4, 44, 3);
+          sim.fill_rect(94, 110, 132, 20, 2);
+          sim.fill_rect(140, 70, 40, 16, 1);
+        },
+        float: () => {
+          sim.fill_rect(90, 130, 140, 4, 3);
+          sim.fill_rect(90, 90, 4, 44, 3);
+          sim.fill_rect(226, 90, 4, 44, 3);
+          sim.fill_rect(94, 118, 132, 12, 2);
+          sim.fill_rect(94, 100, 132, 16, 13);
+        },
+        burn: () => {
+          sim.fill_rect(140, 90, 40, 50, 5);
+          sim.fill_rect(148, 78, 24, 14, 4);
+        },
+        wind: () => {
+          sim.fill_rect(24, 96, 1, 1, 7);
+          sim.fill_rect(48, 88, 28, 20, 6);
+        },
+        glass: () => {
+          sim.fill_rect(130, 80, 60, 4, 3);
+          sim.fill_rect(130, 140, 60, 4, 3);
+          sim.fill_rect(130, 84, 4, 56, 3);
+          sim.fill_rect(186, 84, 4, 56, 3);
+          sim.fill_rect(150, 118, 24, 18, 1);
+          sim.fill_rect(154, 96, 16, 18, 4);
+        },
+      };
+
+      const loadScene = (name, intro = false) => {
+        const build = SCENES[name];
+        if (!build) {
+          return;
+        }
+        sim.clear();
+        build();
+        sim.redraw();
+        if (intro) {
+          emptyHint.classList.remove("show");
+        } else {
+          markDirty();
+        }
+      };
+
+      document.querySelectorAll("#scenes button[data-scene]").forEach((btn) => {
+        btn.addEventListener("click", () => loadScene(btn.dataset.scene));
+      });
+      loadScene("burn", true);
+
+      window.addEventListener("keydown", (e) => {
+        if (e.target instanceof HTMLInputElement) return;
+        if (e.key === "Shift") {
+          shiftHeld = true;
+          drawGhost();
+        }
+        if (e.code === "Space") {
+          e.preventDefault();
+          setPaused(!paused);
+          return;
+        }
+        if (e.code === "Period") {
+          setPaused(true);
+          pendingStep = true;
+          return;
+        }
+        if (e.code === "Slash" && e.shiftKey) {
+          e.preventDefault();
+          helpBtn.click();
+          return;
+        }
+        if (e.code === "BracketLeft") {
+          setBrush(brush - 1);
+          return;
+        }
+        if (e.code === "BracketRight") {
+          setBrush(brush + 1);
+          return;
+        }
+        if (FAN_ARROWS[e.code] !== undefined) {
+          e.preventDefault();
+          setActive(FAN_ARROWS[e.code]);
+          return;
+        }
+        const mat = KEY_MAT[e.code];
+        if (mat !== undefined) {
+          e.preventDefault();
+          setActive(mat === 7 ? lastFan : mat);
+        }
+      });
+      window.addEventListener("keyup", (e) => {
+        if (e.key === "Shift") {
+          shiftHeld = false;
+          drawGhost();
+        }
+      });
+
       const toGrid = (e) => {
         const r = canvas.getBoundingClientRect();
         return [
@@ -217,29 +720,145 @@
           Math.floor(((e.clientY - r.top) / r.height) * H),
         ];
       };
-      const paintAt = (e) => {
-        const [x, y] = toGrid(e);
-        sim.paint(x, y, material, brush);
+
+      const snapPoint = (ox, oy, x, y, shift) => {
+        if (!shift) {
+          return [x, y];
+        }
+        const dx = x - ox;
+        const dy = y - oy;
+        const adx = Math.abs(dx);
+        const ady = Math.abs(dy);
+        if (adx === 0 && ady === 0) {
+          return [x, y];
+        }
+        if (ady < adx / 2) {
+          return [x, oy];
+        }
+        if (adx < ady / 2) {
+          return [ox, y];
+        }
+        const d = Math.min(adx, ady);
+        return [ox + Math.sign(dx) * d, oy + Math.sign(dy) * d];
       };
+
+      const strokeMat = (e) => {
+        if (e.buttons & 2 || e.button === 2) {
+          return 0;
+        }
+        return material;
+      };
+
+      const paintStroke = (x0, y0, x1, y1, mat) => {
+        sim.paint_line(x0, y0, x1, y1, mat, brush);
+        markDirty();
+        if (paused) {
+          sim.redraw();
+        }
+      };
+
+      const updateProbe = (x, y) => {
+        if (x < 0 || y < 0 || x >= W || y >= H) {
+          probeEl.textContent = "—";
+          return;
+        }
+        const id = sim.cell_at(x, y);
+        const heat = sim.heat_at(x, y);
+        const name = NAMES[id] ?? `id ${id}`;
+        probeEl.textContent =
+          id === 0 ? `${name}  (${x},${y})` : `${name}  heat ${heat}  (${x},${y})`;
+      };
+
+      const ghostColor = () => {
+        if (erasing) {
+          return "rgba(200,200,200,0.7)";
+        }
+        return SWATCH[material] ?? "#ffffff";
+      };
+
+      const drawGhost = () => {
+        gctx.clearRect(0, 0, W, H);
+        if (!hover) {
+          return;
+        }
+        const [hx, hy] = hover;
+        const [x, y] = painting
+          ? snapPoint(originX, originY, hx, hy, shiftHeld)
+          : [hx, hy];
+        gctx.strokeStyle = ghostColor();
+        gctx.lineWidth = 1;
+        if (painting && shiftHeld) {
+          gctx.beginPath();
+          gctx.moveTo(originX + 0.5, originY + 0.5);
+          gctx.lineTo(x + 0.5, y + 0.5);
+          gctx.stroke();
+        }
+        gctx.beginPath();
+        gctx.arc(x + 0.5, y + 0.5, brush + 0.45, 0, Math.PI * 2);
+        gctx.stroke();
+      };
+
+      canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+      canvas.addEventListener(
+        "wheel",
+        (e) => {
+          e.preventDefault();
+          setBrush(brush + (e.deltaY < 0 ? 1 : -1));
+        },
+        { passive: false },
+      );
+      canvas.addEventListener("pointerenter", () => {
+        canvas.style.cursor = "none";
+      });
       canvas.addEventListener("pointerdown", (e) => {
         painting = true;
+        erasing = e.button === 2 || (e.buttons & 2) !== 0;
+        shiftHeld = e.shiftKey;
         canvas.setPointerCapture(e.pointerId);
-        paintAt(e);
+        canvas.style.cursor = "none";
+        const [x, y] = toGrid(e);
+        originX = x;
+        originY = y;
+        lastX = x;
+        lastY = y;
+        hover = [x, y];
+        paintStroke(x, y, x, y, strokeMat(e));
+        updateProbe(x, y);
+        drawGhost();
       });
       canvas.addEventListener("pointermove", (e) => {
-        if (!painting) return;
-        paintAt(e);
+        const [x, y] = toGrid(e);
+        hover = [x, y];
+        shiftHeld = e.shiftKey;
+        erasing = painting && (e.buttons & 2) !== 0;
+        updateProbe(x, y);
+        drawGhost();
+        if (!painting) {
+          return;
+        }
+        const [sx, sy] = snapPoint(originX, originY, x, y, e.shiftKey);
+        paintStroke(lastX, lastY, sx, sy, strokeMat(e));
+        lastX = sx;
+        lastY = sy;
       });
-      canvas.addEventListener("pointerup", () => (painting = false));
-      canvas.addEventListener("pointercancel", () => (painting = false));
-
-      const fpsEl = document.getElementById("fps");
-      let frames = 0;
-      let last = performance.now();
+      const endStroke = () => {
+        painting = false;
+        erasing = false;
+        drawGhost();
+      };
+      canvas.addEventListener("pointerup", endStroke);
+      canvas.addEventListener("pointercancel", endStroke);
+      canvas.addEventListener("pointerleave", () => {
+        if (painting) {
+          return;
+        }
+        hover = null;
+        probeEl.textContent = "—";
+        canvas.style.cursor = "crosshair";
+        drawGhost();
+      });
 
       function blit() {
-        // Re-create the view every frame: memory.buffer is
-        // invalidated if WASM memory grows.
         const pixels = new Uint8ClampedArray(
           wasm.memory.buffer,
           sim.frame_ptr(),
@@ -251,20 +870,23 @@
       function loop() {
         if (!paused || pendingStep) {
           sim.tick();
+          ticks++;
           pendingStep = false;
-        } else {
-          sim.redraw();
         }
         blit();
+        drawGhost();
 
         frames++;
         const now = performance.now();
-        if (now - last >= 500) {
+        if (now - lastHud >= 500) {
+          const fps = Math.round((frames * 1000) / (now - lastHud));
+          const tps = Math.round((ticks * 1000) / (now - lastHud));
           fpsEl.textContent = paused
-            ? "paused"
-            : `${Math.round((frames * 1000) / (now - last))} fps`;
+            ? `paused · 0 tps · ${fps} fps`
+            : `${fps} fps · ${tps} tps`;
           frames = 0;
-          last = now;
+          ticks = 0;
+          lastHud = now;
         }
         requestAnimationFrame(loop);
       }
