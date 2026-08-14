@@ -1,6 +1,6 @@
 //! Converts the world grid into an RGBA frame buffer for the browser.
 
-use crate::world::{Cell, World};
+use crate::world::{Cell, World, AIR_CELL};
 
 /// Deterministic per-pixel color jitter so large piles look textured
 /// instead of flat. Uses a cheap integer hash of (x, y).
@@ -32,7 +32,12 @@ pub fn draw(world: &World, frame: &mut [u8]) {
         let j = jitter(x, y);
         let h = world.heat()[i];
         match cell {
-            Cell::Empty => put(frame, i, 12, 12, 18),
+            Cell::Empty => {
+                let ai = (y / AIR_CELL) * world.air_w + (x / AIR_CELL);
+                let avx = world.vx()[ai];
+                let avy = world.vy()[ai];
+                put(frame, i, 12 + avx / 2, 12, 18 + avy / 2);
+            }
             Cell::Sand => {
                 let (r, g, b) = warm(194 + j, 168 + j, 96 + j / 2, h);
                 put(frame, i, r, g, b);
@@ -57,9 +62,10 @@ pub fn draw(world: &World, frame: &mut [u8]) {
                 let (r, g, b) = warm(216 + j / 2, 220 + j / 2, 232, h);
                 put(frame, i, r, g, b);
             }
-            Cell::FanRight | Cell::FanLeft | Cell::FanUp | Cell::FanDown => {
-                put(frame, i, 90, 110, 140);
-            }
+            Cell::FanRight => put(frame, i, 110, 120, 150),
+            Cell::FanLeft => put(frame, i, 70, 100, 140),
+            Cell::FanUp => put(frame, i, 90, 130, 160),
+            Cell::FanDown => put(frame, i, 90, 100, 120),
             Cell::Gunpowder => {
                 let (r, g, b) = warm(40 + j / 2, 36 + j / 2, 32, h);
                 put(frame, i, r, g, b);
@@ -113,5 +119,38 @@ mod tests {
         let (r, g, b) = (frame[0], frame[1], frame[2]);
         assert!(r > g && g > b, "expected orange/red, got {r},{g},{b}");
         assert_eq!(frame[3], 255);
+    }
+
+    #[test]
+    fn empty_pixel_tints_when_fan_blows() {
+        let still = World::new(8, 8);
+        let mut blown = World::new(8, 8);
+        blown.paint(0, 0, Cell::FanRight, 0);
+        blown.step();
+        let mut fs = vec![0u8; 8 * 8 * 4];
+        let mut fb = vec![0u8; 8 * 8 * 4];
+        draw(&still, &mut fs);
+        draw(&blown, &mut fb);
+        // Pixel (3, 0) is Empty in both; in blown it shares the fan's air cell.
+        let o = (0 * 8 + 3) * 4;
+        assert_ne!(
+            &fb[o..o + 3],
+            &fs[o..o + 3],
+            "empty air in a fan cell should differ from still air"
+        );
+        assert_eq!(fb[o + 3], 255);
+    }
+
+    #[test]
+    fn gunpowder_pixels_are_dark() {
+        let mut world = World::new(1, 1);
+        world.paint(0, 0, Cell::Gunpowder, 0);
+        let mut frame = vec![0u8; 4];
+        draw(&world, &mut frame);
+        let (r, g, b) = (frame[0], frame[1], frame[2]);
+        assert!(
+            r < 80 && g < 80 && b < 80,
+            "expected charcoal, got {r},{g},{b}"
+        );
     }
 }

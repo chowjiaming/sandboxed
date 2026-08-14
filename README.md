@@ -33,6 +33,8 @@ unit-testable with plain `cargo test`.
 | Fire         | Rises, flickers, burns out; heats neighbors             |
 | Wood         | Static; ignites when heat reaches 80                    |
 | Steam        | Rises; condenses when cool; water boils next to fire    |
+| Fan          | Static; click the swatch to cycle facing; blows gases in that 4×4 |
+| Gunpowder    | Falls like sand; explodes from fire or heat 80                    |
 | Erase / Clear | Remove cells                                           |
 
 ## Quickstart

@@ -104,6 +104,12 @@
       <button data-mat="6">
         <span class="swatch" style="background: #d8dce8"></span>Steam
       </button>
+      <button id="fan" data-mat="7">
+        <span class="swatch" style="background: #5a6e96"></span>Fan →
+      </button>
+      <button data-mat="11">
+        <span class="swatch" style="background: #28241e"></span>Gunpowder
+      </button>
       <button data-mat="0">
         <span class="swatch" style="background: #1a1a24"></span>Erase
       </button>
@@ -143,15 +149,29 @@
       let paused = false;
       let pendingStep = false;
 
+      const FAN_MATS = [7, 8, 9, 10];
+      const FAN_LABELS = ["Fan →", "Fan ←", "Fan ↑", "Fan ↓"];
+      const fanBtn = document.getElementById("fan");
+
+      const setActive = (btn) => {
+        document
+          .querySelectorAll("#palette button")
+          .forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+      };
+
       document
         .querySelectorAll("#palette button[data-mat]")
         .forEach((btn) => {
           btn.addEventListener("click", () => {
+            if (btn === fanBtn && Number(fanBtn.dataset.mat) === material) {
+              const i = FAN_MATS.indexOf(material);
+              const n = (i + 1) % 4;
+              fanBtn.dataset.mat = String(FAN_MATS[n]);
+              fanBtn.innerHTML = `<span class="swatch" style="background: #5a6e96"></span>${FAN_LABELS[n]}`;
+            }
             material = Number(btn.dataset.mat);
-            document
-              .querySelectorAll("#palette button")
-              .forEach((b) => b.classList.remove("active"));
-            btn.classList.add("active");
+            setActive(btn);
           });
         });
 
