@@ -36,7 +36,7 @@ pub fn draw(world: &World, frame: &mut [u8]) {
                 let ai = (y / AIR_CELL) * world.air_w + (x / AIR_CELL);
                 let avx = world.vx()[ai];
                 let avy = world.vy()[ai];
-                put(frame, i, 12 + avx / 2, 12, 18 + avy / 2);
+                put(frame, i, 12 + avx / 2, 12 - avx / 2, 18 + avy / 2);
             }
             Cell::Sand => {
                 let (r, g, b) = warm(194 + j, 168 + j, 96 + j / 2, h);
@@ -133,10 +133,11 @@ mod tests {
         draw(&blown, &mut fb);
         // Pixel (3, 0) is Empty in both; in blown it shares the fan's air cell.
         let o = (0 * 8 + 3) * 4;
-        assert_ne!(
-            &fb[o..o + 3],
-            &fs[o..o + 3],
-            "empty air in a fan cell should differ from still air"
+        let (sr, sg, sb) = (fs[o], fs[o + 1], fs[o + 2]);
+        let (br, bg, bb) = (fb[o], fb[o + 1], fb[o + 2]);
+        assert!(
+            br > sr && bg < sg,
+            "FanRight should redden (+vx) and green-shift down (−vx): still=({sr},{sg},{sb}) blown=({br},{bg},{bb})"
         );
         assert_eq!(fb[o + 3], 255);
     }
