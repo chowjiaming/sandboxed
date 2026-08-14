@@ -70,6 +70,10 @@ pub fn draw(world: &World, frame: &mut [u8]) {
                 let (r, g, b) = warm(40 + j / 2, 36 + j / 2, 32, h);
                 put(frame, i, r, g, b);
             }
+            Cell::Smoke => {
+                let (r, g, b) = warm(96 + j / 2, 96 + j / 2, 100, h);
+                put(frame, i, r, g, b);
+            }
         }
     }
 }
