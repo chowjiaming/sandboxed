@@ -232,10 +232,22 @@ impl World {
             for x in 0..self.width {
                 let i = self.air_idx_of(x, y);
                 match self.get(x, y) {
-                    Cell::FanRight => self.vx[i] = FAN_SPEED,
-                    Cell::FanLeft => self.vx[i] = -FAN_SPEED,
-                    Cell::FanUp => self.vy[i] = -FAN_SPEED,
-                    Cell::FanDown => self.vy[i] = FAN_SPEED,
+                    Cell::FanRight => {
+                        self.vx[i] = FAN_SPEED;
+                        self.vy[i] = 0;
+                    }
+                    Cell::FanLeft => {
+                        self.vx[i] = -FAN_SPEED;
+                        self.vy[i] = 0;
+                    }
+                    Cell::FanUp => {
+                        self.vx[i] = 0;
+                        self.vy[i] = -FAN_SPEED;
+                    }
+                    Cell::FanDown => {
+                        self.vx[i] = 0;
+                        self.vy[i] = FAN_SPEED;
+                    }
                     _ => {}
                 }
             }
@@ -1101,6 +1113,17 @@ mod tests {
             "idle fan lost vy (inject skipped sleeping chunk?): {}",
             w.vy()[i]
         );
+    }
+
+    #[test]
+    fn orthogonal_fans_last_in_scan_order_wins() {
+        let mut w = World::new(8, 8);
+        w.paint(0, 0, Cell::FanRight, 0);
+        w.paint(1, 0, Cell::FanDown, 0);
+        w.step();
+        let i = w.air_idx_of_for_test(0, 0);
+        assert_eq!(w.vx()[i], 0, "FanDown should zero vx from earlier FanRight");
+        assert!(w.vy()[i] > 0, "FanDown should inject +vy, got {}", w.vy()[i]);
     }
 
     #[test]
