@@ -593,6 +593,9 @@ impl World {
         if self.has_adjacent_wood(x, y) {
             return;
         }
+        if self.try_air_push(x, y, GAS_PUSH) {
+            return;
+        }
         if y == 0 {
             return;
         }
@@ -629,6 +632,9 @@ impl World {
             self.wake(x, y, true);
             return;
         }
+        if self.try_air_push(x, y, GAS_PUSH) {
+            return;
+        }
         if y == 0 {
             return;
         }
@@ -648,6 +654,29 @@ impl World {
                 return;
             }
         }
+    }
+
+    fn try_air_push(&mut self, x: usize, y: usize, threshold: i16) -> bool {
+        let i = self.air_idx_of(x, y);
+        let vx = self.vx[i];
+        let vy = self.vy[i];
+        let (dx, dy) = if vx.abs() >= vy.abs() {
+            if vx.abs() < threshold {
+                return false;
+            }
+            (vx.signum() as isize, 0)
+        } else {
+            if vy.abs() < threshold {
+                return false;
+            }
+            (0, vy.signum() as isize)
+        };
+        let nx = x as isize + dx;
+        let ny = y as isize + dy;
+        if nx < 0 || ny < 0 {
+            return false;
+        }
+        self.try_move(x, y, nx as usize, ny as usize)
     }
 
     fn try_move(&mut self, x: usize, y: usize, nx: usize, ny: usize) -> bool {
@@ -729,6 +758,7 @@ impl World {
                 return;
             }
         }
+        self.try_air_push(x, y, WATER_PUSH);
     }
 }
 
@@ -1123,7 +1153,53 @@ mod tests {
         w.step();
         let i = w.air_idx_of_for_test(0, 0);
         assert_eq!(w.vx()[i], 0, "FanDown should zero vx from earlier FanRight");
-        assert!(w.vy()[i] > 0, "FanDown should inject +vy, got {}", w.vy()[i]);
+        assert!(
+            w.vy()[i] > 0,
+            "FanDown should inject +vy, got {}",
+            w.vy()[i]
+        );
+    }
+
+    #[test]
+    fn steam_in_front_of_fan_moves_right() {
+        let mut blown = World::new(24, 8);
+        blown.paint(0, 4, Cell::FanRight, 0);
+        blown.paint(1, 4, Cell::Steam, 0);
+        let mut still = World::new(24, 8);
+        still.paint(1, 4, Cell::Steam, 0);
+        for _ in 0..16 {
+            blown.step();
+            still.step();
+        }
+        let blown_x = (0..24)
+            .find(|&x| (0..8).any(|y| blown.get(x, y) == Cell::Steam))
+            .expect("steam still in blown world");
+        let still_x = (0..24)
+            .find(|&x| (0..8).any(|y| still.get(x, y) == Cell::Steam))
+            .expect("steam still in control world");
+        assert!(
+            blown_x > still_x,
+            "fan should push steam right: blown_x={blown_x} still_x={still_x}"
+        );
+    }
+
+    #[test]
+    fn sand_next_to_fan_does_not_blow_away() {
+        let mut w = World::new(8, 8);
+        w.paint(0, 6, Cell::FanRight, 0);
+        for x in 0..8 {
+            w.paint(x, 7, Cell::Stone, 0);
+        }
+        w.paint(1, 6, Cell::Sand, 0);
+        for _ in 0..16 {
+            w.step();
+        }
+        assert_eq!(w.get(1, 6), Cell::Sand);
+        for x in 2..8 {
+            for y in 0..7 {
+                assert_ne!(w.get(x, y), Cell::Sand, "sand blown to ({x},{y})");
+            }
+        }
     }
 
     #[test]
