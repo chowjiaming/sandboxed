@@ -58,6 +58,44 @@ impl Simulation {
         }
     }
 
+    /// Stamp `material` along a line so fast pointer strokes do not skip cells.
+    pub fn paint_line(
+        &mut self,
+        x0: usize,
+        y0: usize,
+        x1: usize,
+        y1: usize,
+        material: u8,
+        radius: usize,
+    ) {
+        if let Some(cell) = Cell::from_u8(material) {
+            self.world.paint_line(x0, y0, x1, y1, cell, radius);
+        }
+    }
+
+    /// Fill a rectangle of `material`. Used by demo scenes; not on the hot path.
+    pub fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, material: u8) {
+        if let Some(cell) = Cell::from_u8(material) {
+            self.world.fill_rect(x, y, w, h, cell);
+        }
+    }
+
+    /// Material id at (x, y), or 0 (empty) if out of bounds.
+    pub fn cell_at(&self, x: usize, y: usize) -> u8 {
+        if x >= self.world.width || y >= self.world.height {
+            return 0;
+        }
+        self.world.get(x, y) as u8
+    }
+
+    /// Heat at (x, y), or 0 if out of bounds.
+    pub fn heat_at(&self, x: usize, y: usize) -> u8 {
+        if x >= self.world.width || y >= self.world.height {
+            return 0;
+        }
+        self.world.heat()[y * self.world.width + x]
+    }
+
     pub fn clear(&mut self) {
         self.world = World::new(self.world.width, self.world.height);
     }
@@ -83,5 +121,35 @@ mod tests {
         assert_eq!(paused, frame_bytes(&sim));
         sim.tick();
         assert_ne!(paused, frame_bytes(&sim));
+    }
+
+    #[test]
+    fn cell_at_and_heat_at_read_painted_cells() {
+        let mut sim = Simulation::new(4, 4);
+        sim.paint(2, 1, 6, 0);
+        assert_eq!(sim.cell_at(2, 1), 6);
+        assert_eq!(sim.heat_at(2, 1), 120);
+        assert_eq!(sim.cell_at(0, 0), 0);
+        assert_eq!(sim.cell_at(99, 99), 0);
+        assert_eq!(sim.heat_at(99, 99), 0);
+    }
+
+    #[test]
+    fn paint_line_does_not_skip_cells() {
+        let mut sim = Simulation::new(8, 8);
+        sim.paint_line(0, 0, 7, 7, 1, 0);
+        for i in 0..8 {
+            assert_eq!(sim.cell_at(i, i), 1);
+        }
+    }
+
+    #[test]
+    fn fill_rect_round_trips_through_cell_at() {
+        let mut sim = Simulation::new(8, 8);
+        sim.fill_rect(1, 1, 3, 2, 1);
+        assert_eq!(sim.cell_at(1, 1), 1);
+        assert_eq!(sim.cell_at(3, 2), 1);
+        assert_eq!(sim.cell_at(0, 1), 0);
+        assert_eq!(sim.cell_at(4, 1), 0);
     }
 }

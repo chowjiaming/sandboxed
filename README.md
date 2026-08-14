@@ -9,9 +9,10 @@ WebAssembly, and rendered in the browser.
 **[Live demo](https://chowjiaming.github.io/sandboxed/)**
 
 Paint sand, water, stone, fire, and wood onto a 320×200 grid. The
-simulation runs in WASM: a flat `Vec<Cell>`, no per-frame
-allocation, and a thin `wasm-bindgen` boundary so the core stays
-unit-testable with plain `cargo test`.
+page loads a small wood-and-fire scene so burning is visible
+immediately. The simulation runs in WASM: a flat `Vec<Cell>`, no
+per-frame allocation, and a thin `wasm-bindgen` boundary so the
+core stays unit-testable with plain `cargo test`.
 
 ## Why Rust → WASM
 
@@ -23,17 +24,24 @@ unit-testable with plain `cargo test`.
 
 | Input        | Action                                      |
 | ------------ | ------------------------------------------- |
-| Click / drag | Paint the selected material                 |
-| Brush slider | Radius 1–8                                  |
+| Click / drag | Paint the selected material (gapless stroke)|
+| Shift-drag   | Straight line (horizontal, vertical, or 45°)|
+| Right-click  | Erase                                       |
+| Brush slider | Radius 1–8; `[` `]` or scroll wheel         |
+| 1–9 / 0 / O I G | Select material                          |
+| Arrow keys   | Fan facing                                  |
+| Scenes       | Sink, Float, Burn, Wind, Glass presets      |
 | Pause / Step | Freeze the sim; advance one tick            |
 | Space / `.`  | Pause toggle / single-step                  |
+| `?`          | Toggle shortcut overlay                     |
+| Hover        | Material + heat under the cursor            |
 | Sand         | Falls and piles; sinks through water        |
 | Water        | Flows and spreads                           |
 | Stone        | Static obstacle                             |
 | Fire         | Rises, flickers, burns out; heats neighbors             |
 | Wood         | Static; ignites when heat reaches 80                    |
 | Steam        | Rises; condenses when cool; water boils next to fire    |
-| Fan          | Static; click the swatch to cycle facing; blows gases in that 4×4 |
+| Fan          | Four facing buttons (or arrow keys); blows gases in that 4×4 |
 | Gunpowder    | Falls like sand; explodes from fire or heat 80                    |
 | Smoke        | Rises slower than steam; leftover from burned-out fire            |
 | Oil          | Floats on water; ignites from fire or heat 60                     |
