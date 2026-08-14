@@ -105,6 +105,7 @@ const GUN_PV: i16 = 400;
 const GUN_IGNITE: u8 = 80;
 const AIR_ADV: i32 = 32;
 const AIR_FP: i32 = 256;
+const MAX_FALL: i8 = 3;
 
 pub struct World {
     pub width: usize,
@@ -136,6 +137,9 @@ pub struct World {
     vy_prev: Vec<i16>,
     /// Air cells that contain a locked pixel; velocity is zeroed after advection.
     blocked: Vec<bool>,
+    /// Per-pixel inertia. Empty and locked cells are always 0.
+    pvx: Vec<i8>,
+    pvy: Vec<i8>,
 }
 
 impl World {
@@ -168,6 +172,8 @@ impl World {
             vx_prev: vec![0; nair],
             vy_prev: vec![0; nair],
             blocked: vec![false; nair],
+            pvx: vec![0; width * height],
+            pvy: vec![0; width * height],
         }
     }
 
@@ -194,6 +200,18 @@ impl World {
     #[inline]
     pub fn heat(&self) -> &[u8] {
         &self.heat
+    }
+
+    #[inline]
+    #[cfg(test)]
+    pub fn pvx(&self) -> &[i8] {
+        &self.pvx
+    }
+
+    #[inline]
+    #[cfg(test)]
+    pub fn pvy(&self) -> &[i8] {
+        &self.pvy
     }
 
     #[inline]
@@ -522,6 +540,8 @@ impl World {
                     Cell::Water | Cell::Oil => ROOM_HEAT,
                     _ => 0,
                 };
+                self.pvx[i] = 0;
+                self.pvy[i] = 0;
                 self.wake(px, py, false);
             }
         }
@@ -533,9 +553,21 @@ impl World {
         self.cells.swap(a, b);
         self.ttl.swap(a, b);
         self.heat.swap(a, b);
+        self.pvx.swap(a, b);
+        self.pvy.swap(a, b);
         self.moved[b] = true;
+        self.clear_inert_vel(a);
+        self.clear_inert_vel(b);
         self.wake(x1, y1, true);
         self.wake(x2, y2, true);
+    }
+
+    #[inline]
+    fn clear_inert_vel(&mut self, i: usize) {
+        if self.cells[i] == Cell::Empty || self.cells[i].is_locked() {
+            self.pvx[i] = 0;
+            self.pvy[i] = 0;
+        }
     }
 
     /// Can `mover` displace `target`? Empty always; denser sinks
@@ -666,6 +698,8 @@ impl World {
         self.cells[i] = Cell::Fire;
         self.ttl[i] = FIRE_LIFETIME;
         self.heat[i] = FIRE_HEAT;
+        self.pvx[i] = 0;
+        self.pvy[i] = 0;
         self.moved[i] = true;
         self.wake(x, y, true);
     }
@@ -783,6 +817,8 @@ impl World {
         self.cells[i] = Cell::Empty;
         self.ttl[i] = 0;
         self.heat[i] = 0;
+        self.pvx[i] = 0;
+        self.pvy[i] = 0;
         self.wake(x, y, true);
     }
 
@@ -820,28 +856,8 @@ impl World {
         if self.has_adjacent_wood(x, y) {
             return;
         }
-        if self.try_air_push(x, y, GAS_PUSH) {
-            return;
-        }
-        if y == 0 {
-            return;
-        }
-        let above = y - 1;
-        if self.try_move(x, y, x, above) {
-            return;
-        }
-        let left_first = self.next_rand() & 1 == 0;
-        let diagonals: [(isize, usize); 2] = [(-1, above), (1, above)];
-        for k in 0..2 {
-            let (dx, ny) = diagonals[if left_first { k } else { 1 - k }];
-            let nx = x as isize + dx;
-            if nx < 0 {
-                continue;
-            }
-            if self.try_move(x, y, nx as usize, ny) {
-                return;
-            }
-        }
+        let (x, y) = self.apply_gas_air(x, y);
+        self.rise_gas(x, y);
     }
 
     fn step_steam(&mut self, x: usize, y: usize) {
@@ -859,28 +875,8 @@ impl World {
             self.wake(x, y, true);
             return;
         }
-        if self.try_air_push(x, y, GAS_PUSH) {
-            return;
-        }
-        if y == 0 {
-            return;
-        }
-        let above = y - 1;
-        if self.try_move(x, y, x, above) {
-            return;
-        }
-        let left_first = self.next_rand() & 1 == 0;
-        let diagonals: [(isize, usize); 2] = [(-1, above), (1, above)];
-        for k in 0..2 {
-            let (dx, ny) = diagonals[if left_first { k } else { 1 - k }];
-            let nx = x as isize + dx;
-            if nx < 0 {
-                continue;
-            }
-            if self.try_move(x, y, nx as usize, ny) {
-                return;
-            }
-        }
+        let (x, y) = self.apply_gas_air(x, y);
+        self.rise_gas(x, y);
     }
 
     fn step_smoke(&mut self, x: usize, y: usize) {
@@ -896,15 +892,55 @@ impl World {
             self.cells[i] = Cell::Empty;
             self.heat[i] = 0;
             self.ttl[i] = 0;
+            self.pvx[i] = 0;
+            self.pvy[i] = 0;
             self.wake(x, y, true);
             return;
         }
-        if self.try_air_push(x, y, GAS_PUSH) {
-            return;
-        }
+        let (x, y) = self.apply_gas_air(x, y);
         if !self.frame.is_multiple_of(2) {
             return;
         }
+        self.rise_gas(x, y);
+    }
+
+    fn apply_gas_air(&mut self, x: usize, y: usize) -> (usize, usize) {
+        let i = self.air_idx_of(x, y);
+        let vx = self.vx[i];
+        let vy = self.vy[i];
+        let (dx, dy, mag) = if vx.abs() >= vy.abs() {
+            if vx.abs() < GAS_PUSH {
+                return (x, y);
+            }
+            (vx.signum() as isize, 0, vx.abs())
+        } else {
+            if vy.abs() < GAS_PUSH {
+                return (x, y);
+            }
+            (0, vy.signum() as isize, vy.abs())
+        };
+        let steps = if mag >= GAS_PUSH * 2 { 2 } else { 1 };
+        let pi = self.idx(x, y);
+        self.pvx[pi] = (dx as i8) * steps as i8;
+        self.pvy[pi] = (dy as i8) * steps as i8;
+        let mut cx = x;
+        let mut cy = y;
+        for _ in 0..steps {
+            let nx = cx as isize + dx;
+            let ny = cy as isize + dy;
+            if nx < 0 || ny < 0 {
+                break;
+            }
+            if !self.try_move(cx, cy, nx as usize, ny as usize) {
+                break;
+            }
+            cx = nx as usize;
+            cy = ny as usize;
+        }
+        (cx, cy)
+    }
+
+    fn rise_gas(&mut self, x: usize, y: usize) {
         if y == 0 {
             return;
         }
@@ -946,7 +982,13 @@ impl World {
         if nx < 0 || ny < 0 {
             return false;
         }
-        self.try_move(x, y, nx as usize, ny as usize)
+        if !self.try_move(x, y, nx as usize, ny as usize) {
+            return false;
+        }
+        let pi = self.idx(nx as usize, ny as usize);
+        self.pvx[pi] = dx as i8;
+        self.pvy[pi] = dy as i8;
+        true
     }
 
     fn try_move(&mut self, x: usize, y: usize, nx: usize, ny: usize) -> bool {
@@ -962,16 +1004,30 @@ impl World {
         }
     }
 
-    fn step_sand(&mut self, x: usize, y: usize) {
+    fn apply_gravity(&mut self, x: usize, y: usize) -> (usize, usize, bool) {
+        let i = self.idx(x, y);
+        let next = self.pvy[i].saturating_add(1).min(MAX_FALL);
+        self.pvy[i] = next;
+        let steps = 1 + next.unsigned_abs() as usize;
+        let cx = x;
+        let mut cy = y;
+        for _ in 0..steps {
+            let below = cy + 1;
+            if below >= self.height || !self.try_move(cx, cy, cx, below) {
+                let i = self.idx(cx, cy);
+                self.pvy[i] = 0;
+                return (cx, cy, true);
+            }
+            cy += 1;
+        }
+        (cx, cy, false)
+    }
+
+    fn pile_diagonals(&mut self, x: usize, y: usize) {
         let below = y + 1;
         if below >= self.height {
             return;
         }
-        // Straight down first (sand sinks through water via density).
-        if self.try_move(x, y, x, below) {
-            return;
-        }
-        // Then a random diagonal.
         let left_first = self.next_rand() & 1 == 0;
         let diagonals: [(isize, usize); 2] = [(-1, below), (1, below)];
         for k in 0..2 {
@@ -983,6 +1039,13 @@ impl World {
             if self.try_move(x, y, nx as usize, ny) {
                 return;
             }
+        }
+    }
+
+    fn step_sand(&mut self, x: usize, y: usize) {
+        let (x, y, rest) = self.apply_gravity(x, y);
+        if rest {
+            self.pile_diagonals(x, y);
         }
     }
 
@@ -1027,6 +1090,13 @@ impl World {
         self.swap(x1, y1, x2, y2);
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_pixel_vel_for_test(&mut self, x: usize, y: usize, vx: i8, vy: i8) {
+        let i = self.idx(x, y);
+        self.pvx[i] = vx;
+        self.pvy[i] = vy;
+    }
+
     fn step_water(&mut self, x: usize, y: usize) {
         let i = self.idx(x, y);
         if self.heat[i] > 0 {
@@ -1039,6 +1109,8 @@ impl World {
         if self.heat[i] < ICE_FREEZE {
             self.cells[i] = Cell::Ice;
             self.ttl[i] = 0;
+            self.pvx[i] = 0;
+            self.pvy[i] = 0;
             self.wake(x, y, true);
             return;
         }
@@ -1067,11 +1139,17 @@ impl World {
     }
 
     fn slide_liquid(&mut self, x: usize, y: usize) {
-        let below = y + 1;
-        if below < self.height && self.try_move(x, y, x, below) {
+        let is_water = self.get(x, y) == Cell::Water;
+        let (x, y, rest) = self.apply_gravity(x, y);
+        if !rest {
             return;
         }
-        let left_first = self.next_rand() & 1 == 0;
+        let i = self.idx(x, y);
+        let left_first = if is_water && self.pvx[i] != 0 {
+            self.pvx[i] < 0
+        } else {
+            self.next_rand() & 1 == 0
+        };
         let moves: [(isize, isize); 4] = [(-1, 1), (1, 1), (-1, 0), (1, 0)];
         for k in 0..4 {
             let (dx, dy) = moves[if left_first { k } else { 3 - k }];
@@ -1081,6 +1159,10 @@ impl World {
                 continue;
             }
             if self.try_move(x, y, nx as usize, ny) {
+                if is_water && dy == 0 {
+                    let pi = self.idx(nx as usize, ny);
+                    self.pvx[pi] = dx as i8;
+                }
                 return;
             }
         }
@@ -1679,6 +1761,59 @@ mod tests {
         }
         assert_eq!(count(&w, Cell::Ice), 0);
         assert!(count(&w, Cell::Water) + count(&w, Cell::Steam) > 0);
+    }
+
+    #[test]
+    fn sand_falls_faster_than_one_cell_per_tick() {
+        let mut w = World::new(4, 16);
+        w.paint(2, 0, Cell::Sand, 0);
+        let mut ticks = 0;
+        while ticks < 20 && w.get(2, 15) != Cell::Sand {
+            w.step();
+            ticks += 1;
+        }
+        assert_eq!(w.get(2, 15), Cell::Sand);
+        assert!(ticks < 15, "inertia should beat 1-cell/tick: ticks={ticks}");
+    }
+
+    #[test]
+    fn water_keeps_slide_direction() {
+        let mut w = World::new(16, 4);
+        for x in 0..16 {
+            w.paint(x, 3, Cell::Stone, 0);
+        }
+        w.paint(1, 2, Cell::Water, 0);
+        w.set_pixel_vel_for_test(1, 2, 1, 0);
+        let mut prev = 1usize;
+        let mut increased = 0;
+        for _ in 0..4 {
+            w.step();
+            let x = (0..16)
+                .find(|&x| w.get(x, 2) == Cell::Water)
+                .expect("water on floor channel");
+            if x > prev {
+                increased += 1;
+            }
+            prev = x;
+        }
+        assert!(
+            increased >= 3,
+            "water should keep sliding right: increased={increased} x={prev}"
+        );
+    }
+
+    #[test]
+    fn empty_has_zero_pvy_after_swap_out() {
+        let mut w = World::new(4, 4);
+        w.paint(0, 0, Cell::Sand, 0);
+        w.set_pixel_vel_for_test(0, 0, 0, 2);
+        w.swap_for_test(0, 0, 1, 0);
+        assert_eq!(w.get(0, 0), Cell::Empty);
+        assert_eq!(w.pvy()[0], 0);
+        assert_eq!(w.get(1, 0), Cell::Sand);
+        assert_eq!(w.pvy()[1], 2);
+        assert_eq!(w.pvx().len(), w.cells().len());
+        assert_eq!(w.pvy().len(), w.cells().len());
     }
 
     #[test]
