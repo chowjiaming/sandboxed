@@ -592,6 +592,55 @@ impl World {
         }
     }
 
+    /// Fill a rectangle by stamping radius-0 `paint` so lock/heat/wake stay shared.
+    pub fn fill_rect(&mut self, x: usize, y: usize, w: usize, h: usize, cell: Cell) {
+        let x1 = x.saturating_add(w);
+        let y1 = y.saturating_add(h);
+        for py in y..y1 {
+            for px in x..x1 {
+                self.paint(px, py, cell, 0);
+            }
+        }
+    }
+
+    /// Stamp `cell` along a Bresenham line so fast strokes do not skip pixels.
+    pub fn paint_line(
+        &mut self,
+        x0: usize,
+        y0: usize,
+        x1: usize,
+        y1: usize,
+        cell: Cell,
+        radius: usize,
+    ) {
+        let mut x = x0 as isize;
+        let mut y = y0 as isize;
+        let x1 = x1 as isize;
+        let y1 = y1 as isize;
+        let dx = (x1 - x).abs();
+        let sx = if x < x1 { 1 } else { -1 };
+        let dy = -(y1 - y).abs();
+        let sy = if y < y1 { 1 } else { -1 };
+        let mut err = dx + dy;
+        loop {
+            if x >= 0 && y >= 0 {
+                self.paint(x as usize, y as usize, cell, radius);
+            }
+            if x == x1 && y == y1 {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy {
+                err += dy;
+                x += sx;
+            }
+            if e2 <= dx {
+                err += dx;
+                y += sy;
+            }
+        }
+    }
+
     fn swap(&mut self, x1: usize, y1: usize, x2: usize, y2: usize) {
         let a = self.idx(x1, y1);
         let b = self.idx(x2, y2);
@@ -1255,6 +1304,33 @@ mod tests {
             w.step();
         }
         assert_eq!(w.get(4, 7), Cell::Sand);
+    }
+
+    #[test]
+    fn paint_line_fills_a_diagonal() {
+        let mut w = World::new(8, 8);
+        w.paint_line(0, 0, 7, 7, Cell::Sand, 0);
+        for i in 0..8 {
+            assert_eq!(w.get(i, i), Cell::Sand, "gap at ({i},{i})");
+        }
+        assert_eq!(w.get(1, 0), Cell::Empty);
+    }
+
+    #[test]
+    fn fill_rect_stamps_exact_block() {
+        let mut w = World::new(8, 8);
+        w.fill_rect(1, 1, 3, 2, Cell::Sand);
+        for y in 1..3 {
+            for x in 1..4 {
+                assert_eq!(w.get(x, y), Cell::Sand);
+            }
+        }
+        assert_eq!(w.get(0, 1), Cell::Empty);
+        assert_eq!(w.get(4, 1), Cell::Empty);
+        assert_eq!(w.get(1, 3), Cell::Empty);
+        w.fill_rect(6, 6, 8, 8, Cell::Sand);
+        assert_eq!(w.get(7, 7), Cell::Sand);
+        assert_eq!(w.get(5, 5), Cell::Empty);
     }
 
     #[test]
