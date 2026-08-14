@@ -441,6 +441,7 @@ impl World {
                         }
                         match self.cells[i] {
                             Cell::Sand => self.step_sand(x, y),
+                            Cell::Gunpowder => self.step_gunpowder(x, y),
                             Cell::Water => self.step_water(x, y),
                             Cell::Fire => self.step_fire(x, y),
                             Cell::Steam => self.step_steam(x, y),
@@ -463,6 +464,11 @@ impl World {
         self.wake(x, y, true);
     }
 
+    fn add_pv(&mut self, x: usize, y: usize, amount: i16) {
+        let i = self.air_idx_of(x, y);
+        self.pv[i] = self.pv[i].saturating_add(amount);
+    }
+
     #[inline]
     fn add_heat(&mut self, x: usize, y: usize, amount: u8) {
         if x >= self.width || y >= self.height {
@@ -479,6 +485,7 @@ impl World {
             Cell::Water if self.heat[i] >= WATER_BOIL => {
                 self.cells[i] = Cell::Steam;
                 self.ttl[i] = 0;
+                self.add_pv(x, y, BOIL_PV);
             }
             _ => {}
         }
@@ -714,6 +721,37 @@ impl World {
                 return;
             }
         }
+    }
+
+    fn explode_gunpowder(&mut self, x: usize, y: usize) {
+        for dy in -1isize..=1 {
+            for dx in -1isize..=1 {
+                let nx = x as isize + dx;
+                let ny = y as isize + dy;
+                if nx < 0 || ny < 0 {
+                    continue;
+                }
+                let (nx, ny) = (nx as usize, ny as usize);
+                if nx >= self.width || ny >= self.height {
+                    continue;
+                }
+                let cell = self.get(nx, ny);
+                if cell == Cell::Stone || cell.is_fan() {
+                    continue;
+                }
+                self.ignite(nx, ny);
+            }
+        }
+        self.add_pv(x, y, GUN_PV);
+    }
+
+    fn step_gunpowder(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        if self.heat[i] >= GUN_IGNITE || self.first_cardinal(x, y, Cell::Fire).is_some() {
+            self.explode_gunpowder(x, y);
+            return;
+        }
+        self.step_sand(x, y);
     }
 
     #[cfg(test)]
@@ -1039,6 +1077,50 @@ mod tests {
         w.add_heat_for_test(1, 1, WATER_BOIL);
         assert_eq!(w.get(1, 1), Cell::Steam);
         assert!(w.heat()[1 * 4 + 1] >= WATER_BOIL);
+    }
+
+    #[test]
+    fn boil_adds_pressure() {
+        let mut w = World::new(4, 4);
+        w.paint(1, 1, Cell::Water, 0);
+        let i = w.air_idx_of_for_test(1, 1);
+        let before = w.pv()[i];
+        w.add_heat_for_test(1, 1, WATER_BOIL);
+        assert_eq!(w.get(1, 1), Cell::Steam);
+        assert!(
+            w.pv()[i] >= before + BOIL_PV,
+            "boil should add pv: before={before} after={}",
+            w.pv()[i]
+        );
+    }
+
+    #[test]
+    fn gunpowder_explodes_from_cardinal_fire() {
+        let mut w = World::new(8, 8);
+        w.paint(3, 3, Cell::Gunpowder, 0);
+        w.paint(3, 2, Cell::Fire, 0);
+        w.paint(2, 2, Cell::Stone, 0);
+        w.step();
+        assert_eq!(w.get(2, 2), Cell::Stone, "stone in the 3×3 must remain");
+        assert_eq!(w.get(3, 3), Cell::Fire);
+        assert_eq!(w.get(4, 3), Cell::Fire);
+        assert_eq!(w.get(3, 4), Cell::Fire);
+        let i = w.air_idx_of_for_test(3, 3);
+        assert!(
+            w.pv()[i] >= GUN_PV,
+            "explode is after this tick's Euler, pv should still be >= GUN_PV, got {}",
+            w.pv()[i]
+        );
+    }
+
+    #[test]
+    fn gunpowder_falls_like_sand() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 0, Cell::Gunpowder, 0);
+        for _ in 0..16 {
+            w.step();
+        }
+        assert_eq!(w.get(4, 7), Cell::Gunpowder);
     }
 
     #[test]
