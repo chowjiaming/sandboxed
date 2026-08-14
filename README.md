@@ -36,6 +36,8 @@ unit-testable with plain `cargo test`.
 | Fan          | Static; click the swatch to cycle facing; blows gases in that 4×4 |
 | Gunpowder    | Falls like sand; explodes from fire or heat 80                    |
 | Smoke        | Rises slower than steam; leftover from burned-out fire            |
+| Oil          | Floats on water; ignites from fire or heat 60                     |
+| Ice          | Static; melts to water at heat 25; water freezes below 15         |
 | Erase / Clear | Remove cells                                           |
 
 ## Quickstart
