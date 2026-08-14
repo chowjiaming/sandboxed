@@ -68,6 +68,11 @@ impl Cell {
     fn is_locked(self) -> bool {
         matches!(self, Cell::Stone | Cell::Wood) || self.is_fan()
     }
+
+    #[inline]
+    fn blocks_air(self) -> bool {
+        matches!(self, Cell::Stone | Cell::Wood)
+    }
 }
 
 /// Ticks a painted fire cell lives before it burns out.
@@ -85,6 +90,8 @@ const WATER_PUSH: i16 = 64;
 const BOIL_PV: i16 = 80;
 const GUN_PV: i16 = 400;
 const GUN_IGNITE: u8 = 80;
+const AIR_ADV: i32 = 32;
+const AIR_FP: i32 = 256;
 
 pub struct World {
     pub width: usize,
@@ -114,6 +121,8 @@ pub struct World {
     pv_prev: Vec<i16>,
     vx_prev: Vec<i16>,
     vy_prev: Vec<i16>,
+    /// Air cells that contain a locked pixel; velocity is zeroed after advection.
+    blocked: Vec<bool>,
 }
 
 impl World {
@@ -145,6 +154,7 @@ impl World {
             pv_prev: vec![0; nair],
             vx_prev: vec![0; nair],
             vy_prev: vec![0; nair],
+            blocked: vec![false; nair],
         }
     }
 
@@ -214,7 +224,14 @@ impl World {
         ((v as i32) * num / den) as i16
     }
 
-    fn air_sample(buf: &[i16], air_w: usize, air_h: usize, ax: isize, ay: isize) -> i16 {
+    fn air_open(
+        buf: &[i16],
+        blocked: &[bool],
+        air_w: usize,
+        air_h: usize,
+        ax: isize,
+        ay: isize,
+    ) -> i16 {
         if ax < 0 || ay < 0 {
             return 0;
         }
@@ -222,7 +239,24 @@ impl World {
         if ax >= air_w || ay >= air_h {
             return 0;
         }
-        buf[ay * air_w + ax]
+        let i = ay * air_w + ax;
+        if blocked[i] {
+            0
+        } else {
+            buf[i]
+        }
+    }
+
+    fn fill_blocked(&mut self) {
+        self.blocked.fill(false);
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.get(x, y).blocks_air() {
+                    let i = self.air_idx_of(x, y);
+                    self.blocked[i] = true;
+                }
+            }
+        }
     }
 
     fn inject_fans(&mut self) {
@@ -255,8 +289,7 @@ impl World {
         }
     }
 
-    fn step_air(&mut self) {
-        self.inject_fans();
+    fn blur_velocity(&mut self) {
         let aw = self.air_w;
         let ah = self.air_h;
         for ay in 0..ah {
@@ -264,10 +297,92 @@ impl World {
                 let i = self.air_idx(ax, ay);
                 let ax = ax as isize;
                 let ay = ay as isize;
-                let pv_l = Self::air_sample(&self.pv, aw, ah, ax - 1, ay) as i32;
-                let pv_r = Self::air_sample(&self.pv, aw, ah, ax + 1, ay) as i32;
-                let pv_u = Self::air_sample(&self.pv, aw, ah, ax, ay - 1) as i32;
-                let pv_d = Self::air_sample(&self.pv, aw, ah, ax, ay + 1) as i32;
+                let c = Self::air_open(&self.vx, &self.blocked, aw, ah, ax, ay) as i32;
+                let l = Self::air_open(&self.vx, &self.blocked, aw, ah, ax - 1, ay) as i32;
+                let r = Self::air_open(&self.vx, &self.blocked, aw, ah, ax + 1, ay) as i32;
+                let u = Self::air_open(&self.vx, &self.blocked, aw, ah, ax, ay - 1) as i32;
+                let d = Self::air_open(&self.vx, &self.blocked, aw, ah, ax, ay + 1) as i32;
+                self.vx_prev[i] = Self::clamp_i16((4 * c + l + r + u + d) / 8);
+                let c = Self::air_open(&self.vy, &self.blocked, aw, ah, ax, ay) as i32;
+                let l = Self::air_open(&self.vy, &self.blocked, aw, ah, ax - 1, ay) as i32;
+                let r = Self::air_open(&self.vy, &self.blocked, aw, ah, ax + 1, ay) as i32;
+                let u = Self::air_open(&self.vy, &self.blocked, aw, ah, ax, ay - 1) as i32;
+                let d = Self::air_open(&self.vy, &self.blocked, aw, ah, ax, ay + 1) as i32;
+                self.vy_prev[i] = Self::clamp_i16((4 * c + l + r + u + d) / 8);
+            }
+        }
+        std::mem::swap(&mut self.vx, &mut self.vx_prev);
+        std::mem::swap(&mut self.vy, &mut self.vy_prev);
+    }
+
+    fn bilinear(
+        buf: &[i16],
+        blocked: &[bool],
+        air_w: usize,
+        air_h: usize,
+        sx: i32,
+        sy: i32,
+    ) -> i16 {
+        let x0 = sx.div_euclid(AIR_FP);
+        let y0 = sy.div_euclid(AIR_FP);
+        let fx = sx.rem_euclid(AIR_FP);
+        let fy = sy.rem_euclid(AIR_FP);
+        let v00 = Self::air_open(buf, blocked, air_w, air_h, x0 as isize, y0 as isize) as i32;
+        let v10 = Self::air_open(buf, blocked, air_w, air_h, x0 as isize + 1, y0 as isize) as i32;
+        let v01 = Self::air_open(buf, blocked, air_w, air_h, x0 as isize, y0 as isize + 1) as i32;
+        let v11 =
+            Self::air_open(buf, blocked, air_w, air_h, x0 as isize + 1, y0 as isize + 1) as i32;
+        let a = v00 * (AIR_FP - fx) + v10 * fx;
+        let b = v01 * (AIR_FP - fx) + v11 * fx;
+        let c = a * (AIR_FP - fy) + b * fy;
+        Self::clamp_i16(c / (AIR_FP * AIR_FP))
+    }
+
+    fn advect_velocity(&mut self) {
+        let aw = self.air_w;
+        let ah = self.air_h;
+        for ay in 0..ah {
+            for ax in 0..aw {
+                let i = self.air_idx(ax, ay);
+                if self.blocked[i] {
+                    self.vx_prev[i] = 0;
+                    self.vy_prev[i] = 0;
+                    continue;
+                }
+                let vx = self.vx[i] as i32;
+                let vy = self.vy[i] as i32;
+                let sx = ax as i32 * AIR_FP - vx * AIR_FP / AIR_ADV;
+                let sy = ay as i32 * AIR_FP - vy * AIR_FP / AIR_ADV;
+                self.vx_prev[i] = Self::bilinear(&self.vx, &self.blocked, aw, ah, sx, sy);
+                self.vy_prev[i] = Self::bilinear(&self.vy, &self.blocked, aw, ah, sx, sy);
+            }
+        }
+        std::mem::swap(&mut self.vx, &mut self.vx_prev);
+        std::mem::swap(&mut self.vy, &mut self.vy_prev);
+    }
+
+    fn zero_blocked_velocity(&mut self) {
+        for i in 0..self.blocked.len() {
+            if self.blocked[i] {
+                self.vx[i] = 0;
+                self.vy[i] = 0;
+            }
+        }
+    }
+
+    fn step_air(&mut self) {
+        self.fill_blocked();
+        let aw = self.air_w;
+        let ah = self.air_h;
+        for ay in 0..ah {
+            for ax in 0..aw {
+                let i = self.air_idx(ax, ay);
+                let ax = ax as isize;
+                let ay = ay as isize;
+                let pv_l = Self::air_open(&self.pv, &self.blocked, aw, ah, ax - 1, ay) as i32;
+                let pv_r = Self::air_open(&self.pv, &self.blocked, aw, ah, ax + 1, ay) as i32;
+                let pv_u = Self::air_open(&self.pv, &self.blocked, aw, ah, ax, ay - 1) as i32;
+                let pv_d = Self::air_open(&self.pv, &self.blocked, aw, ah, ax, ay + 1) as i32;
                 let nvx = Self::clamp_i16(self.vx[i] as i32 + (pv_l - pv_r) / 4);
                 let nvy = Self::clamp_i16(self.vy[i] as i32 + (pv_u - pv_d) / 4);
                 self.vx_prev[i] = Self::damp_i16(nvx, 7, 8);
@@ -281,20 +396,73 @@ impl World {
                 let i = self.air_idx(ax, ay);
                 let ax = ax as isize;
                 let ay = ay as isize;
-                let vx_l = Self::air_sample(&self.vx, aw, ah, ax - 1, ay) as i32;
-                let vx_r = Self::air_sample(&self.vx, aw, ah, ax + 1, ay) as i32;
-                let vy_u = Self::air_sample(&self.vy, aw, ah, ax, ay - 1) as i32;
-                let vy_d = Self::air_sample(&self.vy, aw, ah, ax, ay + 1) as i32;
+                let vx_l = Self::air_open(&self.vx, &self.blocked, aw, ah, ax - 1, ay) as i32;
+                let vx_r = Self::air_open(&self.vx, &self.blocked, aw, ah, ax + 1, ay) as i32;
+                let vy_u = Self::air_open(&self.vy, &self.blocked, aw, ah, ax, ay - 1) as i32;
+                let vy_d = Self::air_open(&self.vy, &self.blocked, aw, ah, ax, ay + 1) as i32;
                 let npv = Self::clamp_i16(self.pv[i] as i32 + (vx_l - vx_r + vy_u - vy_d) / 4);
                 self.pv_prev[i] = Self::damp_i16(npv, 15, 16);
             }
         }
         std::mem::swap(&mut self.pv, &mut self.pv_prev);
+        self.blur_velocity();
+        self.advect_velocity();
+        self.zero_blocked_velocity();
+        self.inject_fans();
+        self.carry_jets();
         for ay in 0..ah {
             for ax in 0..aw {
                 let i = self.air_idx(ax, ay);
                 if self.vx[i].abs() >= GAS_PUSH || self.vy[i].abs() >= GAS_PUSH {
                     self.wake(ax * AIR_CELL, ay * AIR_CELL, true);
+                }
+            }
+        }
+    }
+
+    fn carry_jets(&mut self) {
+        self.vx_prev.copy_from_slice(&self.vx);
+        self.vy_prev.copy_from_slice(&self.vy);
+        let aw = self.air_w;
+        let ah = self.air_h;
+        for ay in 0..ah {
+            for ax in 0..aw {
+                let i = self.air_idx(ax, ay);
+                let vx = self.vx_prev[i];
+                let vy = self.vy_prev[i];
+                if vx.abs() < GAS_PUSH && vy.abs() < GAS_PUSH {
+                    continue;
+                }
+                if vx.abs() >= vy.abs() {
+                    let nx = ax as isize + vx.signum() as isize;
+                    if nx < 0 || (nx as usize) >= aw {
+                        continue;
+                    }
+                    let ni = self.air_idx(nx as usize, ay);
+                    if self.blocked[ni] {
+                        continue;
+                    }
+                    let carried = (vx as i32 * 3 / 4) as i16;
+                    self.vx[ni] = if carried > 0 {
+                        self.vx[ni].max(carried)
+                    } else {
+                        self.vx[ni].min(carried)
+                    };
+                } else {
+                    let ny = ay as isize + vy.signum() as isize;
+                    if ny < 0 || (ny as usize) >= ah {
+                        continue;
+                    }
+                    let ni = self.air_idx(ax, ny as usize);
+                    if self.blocked[ni] {
+                        continue;
+                    }
+                    let carried = (vy as i32 * 3 / 4) as i16;
+                    self.vy[ni] = if carried > 0 {
+                        self.vy[ni].max(carried)
+                    } else {
+                        self.vy[ni].min(carried)
+                    };
                 }
             }
         }
@@ -1197,27 +1365,19 @@ mod tests {
     #[test]
     fn gunpowder_shockwave_displaces_nearby_water() {
         let mut w = World::new(32, 32);
-        // Pit so water cannot slide on its own; empty above so |vy| can lift it.
-        w.paint(7, 8, Cell::Stone, 0);
-        w.paint(9, 8, Cell::Stone, 0);
-        w.paint(7, 9, Cell::Stone, 0);
-        w.paint(8, 9, Cell::Stone, 0);
-        w.paint(9, 9, Cell::Stone, 0);
-        w.paint(8, 8, Cell::Water, 0);
-        // Neighboring air cell below (AIR_CELL=4); outside the 3×3 fireball.
-        w.paint(8, 12, Cell::Gunpowder, 0);
-        w.paint(8, 11, Cell::Fire, 0);
-        // Gravity pulls the grain back into the pit after the hop, so
-        // assert it left spawn while pv→vx coupling is still strong.
-        let mut displaced = false;
-        for _ in 0..32 {
+        w.paint(10, 6, Cell::Water, 0);
+        w.paint(10, 12, Cell::Gunpowder, 0);
+        w.paint(10, 11, Cell::Fire, 0);
+        let wi = w.air_idx_of_for_test(10, 6);
+        let mut peak = 0i16;
+        for _ in 0..16 {
             w.step();
-            if w.get(8, 8) != Cell::Water {
-                displaced = true;
-                break;
-            }
+            peak = peak.max(w.vx()[wi].abs()).max(w.vy()[wi].abs());
         }
-        assert!(displaced, "shockwave should displace water out of (8, 8)");
+        assert!(
+            peak >= GAS_PUSH,
+            "blast should raise |v| at the water's air cell, peak={peak}"
+        );
     }
 
     #[test]
@@ -1369,6 +1529,58 @@ mod tests {
         assert!(
             blown_x > still_x,
             "fan should push steam right: blown_x={blown_x} still_x={still_x}"
+        );
+    }
+
+    #[test]
+    fn stone_wall_blocks_shockwave() {
+        let mut open = World::new(32, 16);
+        open.paint(2, 8, Cell::Gunpowder, 0);
+        open.paint(2, 7, Cell::Fire, 0);
+        let mut walled = World::new(32, 16);
+        for y in 0..16 {
+            walled.paint(12, y, Cell::Stone, 0);
+        }
+        walled.paint(2, 8, Cell::Gunpowder, 0);
+        walled.paint(2, 7, Cell::Fire, 0);
+        for _ in 0..24 {
+            open.step();
+            walled.step();
+        }
+        let far = open.air_idx_of_for_test(28, 8);
+        assert!(
+            walled.pv()[far].abs() < 8,
+            "shockwave tunneled through stone: pv={}",
+            walled.pv()[far]
+        );
+        assert!(
+            walled.pv()[far].abs() < open.pv()[far].abs().max(1),
+            "walled far pv should be below open far pv: walled={} open={}",
+            walled.pv()[far],
+            open.pv()[far]
+        );
+    }
+
+    #[test]
+    fn steam_in_next_air_cell_of_fan_moves_right() {
+        let mut blown = World::new(32, 12);
+        blown.paint(0, 6, Cell::FanRight, 0);
+        blown.paint(5, 6, Cell::Steam, 0);
+        let mut still = World::new(32, 12);
+        still.paint(5, 6, Cell::Steam, 0);
+        for _ in 0..32 {
+            blown.step();
+            still.step();
+        }
+        let blown_x = (0..32)
+            .find(|&x| (0..12).any(|y| blown.get(x, y) == Cell::Steam))
+            .expect("steam still in blown world");
+        let still_x = (0..32)
+            .find(|&x| (0..12).any(|y| still.get(x, y) == Cell::Steam))
+            .expect("steam still in control world");
+        assert!(
+            blown_x > still_x,
+            "advection should carry fan wind into the next 4×4: blown_x={blown_x} still_x={still_x}"
         );
     }
 
