@@ -38,6 +38,7 @@ unit-testable with plain `cargo test`.
 | Smoke        | Rises slower than steam; leftover from burned-out fire            |
 | Oil          | Floats on water; ignites from fire or heat 60                     |
 | Ice          | Static; melts to water at heat 25; water freezes below 15         |
+| Glass        | Sand baked at heat 180; locked like stone                         |
 | Erase / Clear | Remove cells                                           |
 
 ## Quickstart
