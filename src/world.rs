@@ -14,6 +14,11 @@ pub enum Cell {
     Fire = 4,
     Wood = 5,
     Steam = 6,
+    FanRight = 7,
+    FanLeft = 8,
+    FanUp = 9,
+    FanDown = 10,
+    Gunpowder = 11,
 }
 
 impl Cell {
@@ -26,6 +31,11 @@ impl Cell {
             4 => Some(Cell::Fire),
             5 => Some(Cell::Wood),
             6 => Some(Cell::Steam),
+            7 => Some(Cell::FanRight),
+            8 => Some(Cell::FanLeft),
+            9 => Some(Cell::FanUp),
+            10 => Some(Cell::FanDown),
+            11 => Some(Cell::Gunpowder),
             _ => None,
         }
     }
@@ -35,10 +45,28 @@ impl Cell {
         match self {
             Cell::Empty => 0,
             Cell::Water => 1,
-            Cell::Sand => 2,
+            Cell::Gunpowder | Cell::Sand => 2,
             Cell::Fire | Cell::Steam => 0,
-            Cell::Stone | Cell::Wood => 255, // immovable
+            Cell::Stone
+            | Cell::Wood
+            | Cell::FanRight
+            | Cell::FanLeft
+            | Cell::FanUp
+            | Cell::FanDown => 255,
         }
+    }
+
+    #[inline]
+    fn is_fan(self) -> bool {
+        matches!(
+            self,
+            Cell::FanRight | Cell::FanLeft | Cell::FanUp | Cell::FanDown
+        )
+    }
+
+    #[inline]
+    fn is_locked(self) -> bool {
+        matches!(self, Cell::Stone | Cell::Wood) || self.is_fan()
     }
 }
 
@@ -50,10 +78,19 @@ const WATER_BOIL: u8 = 100;
 const STEAM_CONDENSE: u8 = 40;
 const STEAM_PAINT_HEAT: u8 = 120;
 const CHUNK: usize = 16;
+pub(crate) const AIR_CELL: usize = 4;
+const FAN_SPEED: i16 = 40;
+const GAS_PUSH: i16 = 24;
+const WATER_PUSH: i16 = 64;
+const BOIL_PV: i16 = 80;
+const GUN_PV: i16 = 400;
+const GUN_IGNITE: u8 = 80;
 
 pub struct World {
     pub width: usize,
     pub height: usize,
+    pub air_w: usize,
+    pub air_h: usize,
     cells: Vec<Cell>,
     /// Per-cell remaining lifetime. Only `Fire` uses nonzero values.
     ttl: Vec<u8>,
@@ -71,6 +108,12 @@ pub struct World {
     active: Vec<bool>,
     /// Chunks woken by motion this tick; becomes `active` after the step.
     next_active: Vec<bool>,
+    pv: Vec<i16>,
+    vx: Vec<i16>,
+    vy: Vec<i16>,
+    pv_prev: Vec<i16>,
+    vx_prev: Vec<i16>,
+    vy_prev: Vec<i16>,
 }
 
 impl World {
@@ -78,9 +121,14 @@ impl World {
         let chunks_x = width.div_ceil(CHUNK);
         let chunks_y = height.div_ceil(CHUNK);
         let nchunks = chunks_x * chunks_y;
+        let air_w = width.div_ceil(AIR_CELL);
+        let air_h = height.div_ceil(AIR_CELL);
+        let nair = air_w * air_h;
         Self {
             width,
             height,
+            air_w,
+            air_h,
             cells: vec![Cell::Empty; width * height],
             ttl: vec![0; width * height],
             heat: vec![0; width * height],
@@ -91,6 +139,12 @@ impl World {
             chunks_y,
             active: vec![false; nchunks],
             next_active: vec![false; nchunks],
+            pv: vec![0; nair],
+            vx: vec![0; nair],
+            vy: vec![0; nair],
+            pv_prev: vec![0; nair],
+            vx_prev: vec![0; nair],
+            vy_prev: vec![0; nair],
         }
     }
 
@@ -119,6 +173,133 @@ impl World {
         &self.heat
     }
 
+    #[inline]
+    fn air_idx(&self, ax: usize, ay: usize) -> usize {
+        ay * self.air_w + ax
+    }
+
+    #[inline]
+    fn air_idx_of(&self, x: usize, y: usize) -> usize {
+        self.air_idx(x / AIR_CELL, y / AIR_CELL)
+    }
+
+    #[inline]
+    #[cfg(test)]
+    pub fn pv(&self) -> &[i16] {
+        &self.pv
+    }
+
+    #[inline]
+    pub fn vx(&self) -> &[i16] {
+        &self.vx
+    }
+
+    #[inline]
+    pub fn vy(&self) -> &[i16] {
+        &self.vy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn air_idx_of_for_test(&self, x: usize, y: usize) -> usize {
+        self.air_idx_of(x, y)
+    }
+
+    #[inline]
+    fn clamp_i16(v: i32) -> i16 {
+        v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    }
+
+    #[inline]
+    fn damp_i16(v: i16, num: i32, den: i32) -> i16 {
+        ((v as i32) * num / den) as i16
+    }
+
+    fn air_sample(buf: &[i16], air_w: usize, air_h: usize, ax: isize, ay: isize) -> i16 {
+        if ax < 0 || ay < 0 {
+            return 0;
+        }
+        let (ax, ay) = (ax as usize, ay as usize);
+        if ax >= air_w || ay >= air_h {
+            return 0;
+        }
+        buf[ay * air_w + ax]
+    }
+
+    fn inject_fans(&mut self) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                match self.get(x, y) {
+                    Cell::FanRight => {
+                        let i = self.air_idx_of(x, y);
+                        self.vx[i] = FAN_SPEED;
+                        self.vy[i] = 0;
+                    }
+                    Cell::FanLeft => {
+                        let i = self.air_idx_of(x, y);
+                        self.vx[i] = -FAN_SPEED;
+                        self.vy[i] = 0;
+                    }
+                    Cell::FanUp => {
+                        let i = self.air_idx_of(x, y);
+                        self.vx[i] = 0;
+                        self.vy[i] = -FAN_SPEED;
+                    }
+                    Cell::FanDown => {
+                        let i = self.air_idx_of(x, y);
+                        self.vx[i] = 0;
+                        self.vy[i] = FAN_SPEED;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn step_air(&mut self) {
+        self.inject_fans();
+        let aw = self.air_w;
+        let ah = self.air_h;
+        for ay in 0..ah {
+            for ax in 0..aw {
+                let i = self.air_idx(ax, ay);
+                let ax = ax as isize;
+                let ay = ay as isize;
+                let pv_l = Self::air_sample(&self.pv, aw, ah, ax - 1, ay) as i32;
+                let pv_r = Self::air_sample(&self.pv, aw, ah, ax + 1, ay) as i32;
+                let pv_u = Self::air_sample(&self.pv, aw, ah, ax, ay - 1) as i32;
+                let pv_d = Self::air_sample(&self.pv, aw, ah, ax, ay + 1) as i32;
+                let nvx = Self::clamp_i16(self.vx[i] as i32 + (pv_l - pv_r) / 4);
+                let nvy = Self::clamp_i16(self.vy[i] as i32 + (pv_u - pv_d) / 4);
+                self.vx_prev[i] = Self::damp_i16(nvx, 7, 8);
+                self.vy_prev[i] = Self::damp_i16(nvy, 7, 8);
+            }
+        }
+        std::mem::swap(&mut self.vx, &mut self.vx_prev);
+        std::mem::swap(&mut self.vy, &mut self.vy_prev);
+        for ay in 0..ah {
+            for ax in 0..aw {
+                let i = self.air_idx(ax, ay);
+                let ax = ax as isize;
+                let ay = ay as isize;
+                let vx_l = Self::air_sample(&self.vx, aw, ah, ax - 1, ay) as i32;
+                let vx_r = Self::air_sample(&self.vx, aw, ah, ax + 1, ay) as i32;
+                let vy_u = Self::air_sample(&self.vy, aw, ah, ax, ay - 1) as i32;
+                let vy_d = Self::air_sample(&self.vy, aw, ah, ax, ay + 1) as i32;
+                let npv = Self::clamp_i16(self.pv[i] as i32 + (vx_l - vx_r + vy_u - vy_d) / 4);
+                self.pv_prev[i] = Self::damp_i16(npv, 15, 16);
+            }
+        }
+        std::mem::swap(&mut self.pv, &mut self.pv_prev);
+        for ay in 0..ah {
+            for ax in 0..aw {
+                let i = self.air_idx(ax, ay);
+                if self.vx[i].abs() >= GAS_PUSH || self.vy[i].abs() >= GAS_PUSH {
+                    self.wake(ax * AIR_CELL, ay * AIR_CELL, true);
+                }
+            }
+        }
+    }
+
     fn next_rand(&mut self) -> u64 {
         let mut x = self.rng;
         x ^= x << 13;
@@ -145,9 +326,9 @@ impl World {
                 if px >= self.width || py >= self.height {
                     continue;
                 }
-                // Don't overwrite stone or wood with loose material (eraser can).
+                // Don't overwrite locked cells with loose material (eraser can).
                 let existing = self.get(px, py);
-                if matches!(existing, Cell::Stone | Cell::Wood) && cell != Cell::Empty {
+                if existing.is_locked() && cell != Cell::Empty {
                     continue;
                 }
                 let i = self.idx(px, py);
@@ -237,8 +418,14 @@ impl World {
     /// Advance the simulation by one tick.
     pub fn step(&mut self) {
         self.frame += 1;
+        self.step_air();
+        // Air wakes land in next_active; the particle scan this tick uses active.
+        for i in 0..self.active.len() {
+            if self.next_active[i] {
+                self.active[i] = true;
+            }
+        }
         self.clear_moved_in_active_chunks();
-        self.next_active.fill(false);
 
         let left_to_right = self.frame.is_multiple_of(2);
         for cy in (0..self.chunks_y).rev() {
@@ -275,6 +462,7 @@ impl World {
                         }
                         match self.cells[i] {
                             Cell::Sand => self.step_sand(x, y),
+                            Cell::Gunpowder => self.step_gunpowder(x, y),
                             Cell::Water => self.step_water(x, y),
                             Cell::Fire => self.step_fire(x, y),
                             Cell::Steam => self.step_steam(x, y),
@@ -297,6 +485,12 @@ impl World {
         self.wake(x, y, true);
     }
 
+    fn add_pv(&mut self, x: usize, y: usize, amount: i16) {
+        let i = self.air_idx_of(x, y);
+        self.pv[i] = self.pv[i].saturating_add(amount);
+        self.wake(x, y, true);
+    }
+
     #[inline]
     fn add_heat(&mut self, x: usize, y: usize, amount: u8) {
         if x >= self.width || y >= self.height {
@@ -313,6 +507,7 @@ impl World {
             Cell::Water if self.heat[i] >= WATER_BOIL => {
                 self.cells[i] = Cell::Steam;
                 self.ttl[i] = 0;
+                self.add_pv(x, y, BOIL_PV);
             }
             _ => {}
         }
@@ -427,6 +622,9 @@ impl World {
         if self.has_adjacent_wood(x, y) {
             return;
         }
+        if self.try_air_push(x, y, GAS_PUSH) {
+            return;
+        }
         if y == 0 {
             return;
         }
@@ -463,6 +661,9 @@ impl World {
             self.wake(x, y, true);
             return;
         }
+        if self.try_air_push(x, y, GAS_PUSH) {
+            return;
+        }
         if y == 0 {
             return;
         }
@@ -482,6 +683,29 @@ impl World {
                 return;
             }
         }
+    }
+
+    fn try_air_push(&mut self, x: usize, y: usize, threshold: i16) -> bool {
+        let i = self.air_idx_of(x, y);
+        let vx = self.vx[i];
+        let vy = self.vy[i];
+        let (dx, dy) = if vx.abs() >= vy.abs() {
+            if vx.abs() < threshold {
+                return false;
+            }
+            (vx.signum() as isize, 0)
+        } else {
+            if vy.abs() < threshold {
+                return false;
+            }
+            (0, vy.signum() as isize)
+        };
+        let nx = x as isize + dx;
+        let ny = y as isize + dy;
+        if nx < 0 || ny < 0 {
+            return false;
+        }
+        self.try_move(x, y, nx as usize, ny as usize)
     }
 
     fn try_move(&mut self, x: usize, y: usize, nx: usize, ny: usize) -> bool {
@@ -519,6 +743,37 @@ impl World {
                 return;
             }
         }
+    }
+
+    fn explode_gunpowder(&mut self, x: usize, y: usize) {
+        for dy in -1isize..=1 {
+            for dx in -1isize..=1 {
+                let nx = x as isize + dx;
+                let ny = y as isize + dy;
+                if nx < 0 || ny < 0 {
+                    continue;
+                }
+                let (nx, ny) = (nx as usize, ny as usize);
+                if nx >= self.width || ny >= self.height {
+                    continue;
+                }
+                let cell = self.get(nx, ny);
+                if cell == Cell::Stone || cell.is_fan() {
+                    continue;
+                }
+                self.ignite(nx, ny);
+            }
+        }
+        self.add_pv(x, y, GUN_PV);
+    }
+
+    fn step_gunpowder(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        if self.heat[i] >= GUN_IGNITE || self.first_cardinal(x, y, Cell::Fire).is_some() {
+            self.explode_gunpowder(x, y);
+            return;
+        }
+        self.step_sand(x, y);
     }
 
     #[cfg(test)]
@@ -563,6 +818,7 @@ impl World {
                 return;
             }
         }
+        self.try_air_push(x, y, WATER_PUSH);
     }
 }
 
@@ -846,6 +1102,135 @@ mod tests {
     }
 
     #[test]
+    fn boil_adds_pressure() {
+        let mut w = World::new(4, 4);
+        w.paint(1, 1, Cell::Water, 0);
+        let i = w.air_idx_of_for_test(1, 1);
+        let before = w.pv()[i];
+        w.add_heat_for_test(1, 1, WATER_BOIL);
+        assert_eq!(w.get(1, 1), Cell::Steam);
+        assert!(
+            w.pv()[i] >= before + BOIL_PV,
+            "boil should add pv: before={before} after={}",
+            w.pv()[i]
+        );
+    }
+
+    #[test]
+    fn gunpowder_explodes_from_cardinal_fire() {
+        let mut w = World::new(8, 8);
+        w.paint(3, 3, Cell::Gunpowder, 0);
+        w.paint(3, 2, Cell::Fire, 0);
+        w.paint(2, 2, Cell::Stone, 0);
+        w.paint(2, 3, Cell::FanRight, 0);
+        w.step();
+        assert_eq!(w.get(2, 2), Cell::Stone, "stone in the 3×3 must remain");
+        assert_eq!(w.get(2, 3), Cell::FanRight, "fan in the 3×3 must remain");
+        assert_eq!(w.get(3, 3), Cell::Fire);
+        assert_eq!(w.get(4, 3), Cell::Fire);
+        assert_eq!(w.get(3, 4), Cell::Fire);
+        let i = w.air_idx_of_for_test(3, 3);
+        assert!(
+            w.pv()[i] >= GUN_PV,
+            "explode is after this tick's Euler, pv should still be >= GUN_PV, got {}",
+            w.pv()[i]
+        );
+    }
+
+    #[test]
+    fn gunpowder_explodes_from_heat_without_fire() {
+        let mut w = World::new(8, 8);
+        w.paint(3, 3, Cell::Gunpowder, 0);
+        w.add_heat_for_test(3, 3, GUN_IGNITE);
+        w.step();
+        assert_eq!(w.get(3, 3), Cell::Fire);
+        assert_eq!(
+            count(&w, Cell::Fire),
+            9,
+            "3×3 empty neighborhood becomes fire"
+        );
+    }
+
+    #[test]
+    fn fan_velocity_stays_bounded_over_long_run() {
+        let mut w = World::new(32, 32);
+        w.paint(0, 0, Cell::FanRight, 0);
+        for _ in 0..600 {
+            w.step();
+        }
+        let peak = w
+            .vx()
+            .iter()
+            .chain(w.vy().iter())
+            .map(|v| v.abs())
+            .max()
+            .unwrap();
+        assert!(
+            peak <= FAN_SPEED,
+            "air |v| ran away: peak={peak} FAN_SPEED={FAN_SPEED}"
+        );
+    }
+
+    #[test]
+    fn gunpowder_pressure_impulse_decays() {
+        let mut w = World::new(32, 32);
+        w.paint(8, 8, Cell::Gunpowder, 0);
+        w.paint(8, 7, Cell::Fire, 0);
+        w.step(); // explodes this tick; pv >= GUN_PV
+        for _ in 0..600 {
+            w.step();
+        }
+        let peak_pv = w.pv().iter().map(|v| v.abs()).max().unwrap();
+        let peak_v = w
+            .vx()
+            .iter()
+            .chain(w.vy().iter())
+            .map(|v| v.abs())
+            .max()
+            .unwrap();
+        assert!(
+            peak_pv < 8 && peak_v < 8,
+            "shockwave did not decay: peak_pv={peak_pv} peak_v={peak_v}"
+        );
+    }
+
+    #[test]
+    fn gunpowder_shockwave_displaces_nearby_water() {
+        let mut w = World::new(32, 32);
+        // Pit so water cannot slide on its own; empty above so |vy| can lift it.
+        w.paint(7, 8, Cell::Stone, 0);
+        w.paint(9, 8, Cell::Stone, 0);
+        w.paint(7, 9, Cell::Stone, 0);
+        w.paint(8, 9, Cell::Stone, 0);
+        w.paint(9, 9, Cell::Stone, 0);
+        w.paint(8, 8, Cell::Water, 0);
+        // Neighboring air cell below (AIR_CELL=4); outside the 3×3 fireball.
+        w.paint(8, 12, Cell::Gunpowder, 0);
+        w.paint(8, 11, Cell::Fire, 0);
+        // Gravity pulls the grain back into the pit after the hop, so
+        // assert it left spawn while pv→vx coupling is still strong.
+        let mut displaced = false;
+        for _ in 0..32 {
+            w.step();
+            if w.get(8, 8) != Cell::Water {
+                displaced = true;
+                break;
+            }
+        }
+        assert!(displaced, "shockwave should displace water out of (8, 8)");
+    }
+
+    #[test]
+    fn gunpowder_falls_like_sand() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 0, Cell::Gunpowder, 0);
+        for _ in 0..16 {
+            w.step();
+        }
+        assert_eq!(w.get(4, 7), Cell::Gunpowder);
+    }
+
+    #[test]
     fn fire_touching_water_extinguishes_and_boils() {
         let mut w = World::new(8, 8);
         w.paint(4, 4, Cell::Water, 0);
@@ -891,7 +1276,119 @@ mod tests {
     #[test]
     fn from_u8_maps_steam() {
         assert_eq!(Cell::from_u8(6), Some(Cell::Steam));
-        assert_eq!(Cell::from_u8(7), None);
+    }
+
+    #[test]
+    fn from_u8_maps_fans_and_gunpowder() {
+        assert_eq!(Cell::from_u8(7), Some(Cell::FanRight));
+        assert_eq!(Cell::from_u8(8), Some(Cell::FanLeft));
+        assert_eq!(Cell::from_u8(9), Some(Cell::FanUp));
+        assert_eq!(Cell::from_u8(10), Some(Cell::FanDown));
+        assert_eq!(Cell::from_u8(11), Some(Cell::Gunpowder));
+        assert_eq!(Cell::from_u8(12), None);
+    }
+
+    #[test]
+    fn paint_cannot_overwrite_fan_except_eraser() {
+        let mut w = World::new(4, 4);
+        w.paint(1, 1, Cell::FanRight, 0);
+        w.paint(1, 1, Cell::Sand, 0);
+        assert_eq!(w.get(1, 1), Cell::FanRight);
+        w.paint(1, 1, Cell::Empty, 0);
+        assert_eq!(w.get(1, 1), Cell::Empty);
+    }
+
+    #[test]
+    fn air_buffers_match_grid() {
+        let w = World::new(320, 200);
+        assert_eq!(w.air_w, 80);
+        assert_eq!(w.air_h, 50);
+        assert_eq!(w.pv().len(), 80 * 50);
+        assert_eq!(w.vx().len(), w.pv().len());
+        assert_eq!(w.vy().len(), w.pv().len());
+    }
+
+    #[test]
+    fn fan_injects_velocity_on_facing_axis() {
+        let mut w = World::new(8, 8);
+        w.paint(0, 0, Cell::FanRight, 0);
+        w.step();
+        let i = w.air_idx_of_for_test(0, 0);
+        assert!(w.vx()[i] > 0, "expected +vx, got {}", w.vx()[i]);
+        assert_eq!(w.vy()[i], 0);
+        assert_eq!(w.get(0, 0), Cell::FanRight);
+    }
+
+    #[test]
+    fn idle_fan_still_blows_after_chunks_sleep() {
+        let mut w = World::new(8, 8);
+        w.paint(0, 0, Cell::FanDown, 0);
+        for _ in 0..8 {
+            w.step();
+        }
+        let i = w.air_idx_of_for_test(0, 0);
+        assert!(
+            w.vy()[i] > 0,
+            "idle fan lost vy (inject skipped sleeping chunk?): {}",
+            w.vy()[i]
+        );
+    }
+
+    #[test]
+    fn orthogonal_fans_last_in_scan_order_wins() {
+        let mut w = World::new(8, 8);
+        w.paint(0, 0, Cell::FanRight, 0);
+        w.paint(1, 0, Cell::FanDown, 0);
+        w.step();
+        let i = w.air_idx_of_for_test(0, 0);
+        assert_eq!(w.vx()[i], 0, "FanDown should zero vx from earlier FanRight");
+        assert!(
+            w.vy()[i] > 0,
+            "FanDown should inject +vy, got {}",
+            w.vy()[i]
+        );
+    }
+
+    #[test]
+    fn steam_in_front_of_fan_moves_right() {
+        let mut blown = World::new(24, 8);
+        blown.paint(0, 4, Cell::FanRight, 0);
+        blown.paint(1, 4, Cell::Steam, 0);
+        let mut still = World::new(24, 8);
+        still.paint(1, 4, Cell::Steam, 0);
+        for _ in 0..16 {
+            blown.step();
+            still.step();
+        }
+        let blown_x = (0..24)
+            .find(|&x| (0..8).any(|y| blown.get(x, y) == Cell::Steam))
+            .expect("steam still in blown world");
+        let still_x = (0..24)
+            .find(|&x| (0..8).any(|y| still.get(x, y) == Cell::Steam))
+            .expect("steam still in control world");
+        assert!(
+            blown_x > still_x,
+            "fan should push steam right: blown_x={blown_x} still_x={still_x}"
+        );
+    }
+
+    #[test]
+    fn sand_next_to_fan_does_not_blow_away() {
+        let mut w = World::new(8, 8);
+        w.paint(0, 6, Cell::FanRight, 0);
+        for x in 0..8 {
+            w.paint(x, 7, Cell::Stone, 0);
+        }
+        w.paint(1, 6, Cell::Sand, 0);
+        for _ in 0..16 {
+            w.step();
+        }
+        assert_eq!(w.get(1, 6), Cell::Sand);
+        for x in 2..8 {
+            for y in 0..7 {
+                assert_ne!(w.get(x, y), Cell::Sand, "sand blown to ({x},{y})");
+            }
+        }
     }
 
     #[test]
