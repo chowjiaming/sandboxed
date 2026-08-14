@@ -47,9 +47,12 @@ impl Cell {
             Cell::Water => 1,
             Cell::Gunpowder | Cell::Sand => 2,
             Cell::Fire | Cell::Steam => 0,
-            Cell::Stone | Cell::Wood | Cell::FanRight | Cell::FanLeft | Cell::FanUp | Cell::FanDown => {
-                255
-            }
+            Cell::Stone
+            | Cell::Wood
+            | Cell::FanRight
+            | Cell::FanLeft
+            | Cell::FanUp
+            | Cell::FanDown => 255,
         }
     }
 
@@ -75,10 +78,24 @@ const WATER_BOIL: u8 = 100;
 const STEAM_CONDENSE: u8 = 40;
 const STEAM_PAINT_HEAT: u8 = 120;
 const CHUNK: usize = 16;
+pub(crate) const AIR_CELL: usize = 4;
+const FAN_SPEED: i16 = 40;
+#[allow(dead_code)]
+const GAS_PUSH: i16 = 24;
+#[allow(dead_code)]
+const WATER_PUSH: i16 = 64;
+#[allow(dead_code)]
+const BOIL_PV: i16 = 80;
+#[allow(dead_code)]
+const GUN_PV: i16 = 400;
+#[allow(dead_code)]
+const GUN_IGNITE: u8 = 80;
 
 pub struct World {
     pub width: usize,
     pub height: usize,
+    pub air_w: usize,
+    pub air_h: usize,
     cells: Vec<Cell>,
     /// Per-cell remaining lifetime. Only `Fire` uses nonzero values.
     ttl: Vec<u8>,
@@ -96,6 +113,12 @@ pub struct World {
     active: Vec<bool>,
     /// Chunks woken by motion this tick; becomes `active` after the step.
     next_active: Vec<bool>,
+    pv: Vec<i16>,
+    vx: Vec<i16>,
+    vy: Vec<i16>,
+    pv_prev: Vec<i16>,
+    vx_prev: Vec<i16>,
+    vy_prev: Vec<i16>,
 }
 
 impl World {
@@ -103,9 +126,14 @@ impl World {
         let chunks_x = width.div_ceil(CHUNK);
         let chunks_y = height.div_ceil(CHUNK);
         let nchunks = chunks_x * chunks_y;
+        let air_w = width.div_ceil(AIR_CELL);
+        let air_h = height.div_ceil(AIR_CELL);
+        let nair = air_w * air_h;
         Self {
             width,
             height,
+            air_w,
+            air_h,
             cells: vec![Cell::Empty; width * height],
             ttl: vec![0; width * height],
             heat: vec![0; width * height],
@@ -116,6 +144,12 @@ impl World {
             chunks_y,
             active: vec![false; nchunks],
             next_active: vec![false; nchunks],
+            pv: vec![0; nair],
+            vx: vec![0; nair],
+            vy: vec![0; nair],
+            pv_prev: vec![0; nair],
+            vx_prev: vec![0; nair],
+            vy_prev: vec![0; nair],
         }
     }
 
@@ -142,6 +176,100 @@ impl World {
     #[inline]
     pub fn heat(&self) -> &[u8] {
         &self.heat
+    }
+
+    #[inline]
+    fn air_idx(&self, ax: usize, ay: usize) -> usize {
+        ay * self.air_w + ax
+    }
+
+    #[inline]
+    fn air_idx_of(&self, x: usize, y: usize) -> usize {
+        self.air_idx(x / AIR_CELL, y / AIR_CELL)
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn pv(&self) -> &[i16] {
+        &self.pv
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn vx(&self) -> &[i16] {
+        &self.vx
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn vy(&self) -> &[i16] {
+        &self.vy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn air_idx_of_for_test(&self, x: usize, y: usize) -> usize {
+        self.air_idx_of(x, y)
+    }
+
+    #[inline]
+    fn damp_i16(v: i16, num: i32, den: i32) -> i16 {
+        ((v as i32) * num / den) as i16
+    }
+
+    fn air_sample(buf: &[i16], air_w: usize, air_h: usize, ax: isize, ay: isize) -> i16 {
+        if ax < 0 || ay < 0 {
+            return 0;
+        }
+        let (ax, ay) = (ax as usize, ay as usize);
+        if ax >= air_w || ay >= air_h {
+            return 0;
+        }
+        buf[ay * air_w + ax]
+    }
+
+    fn inject_fans(&mut self) {
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let i = self.air_idx_of(x, y);
+                match self.get(x, y) {
+                    Cell::FanRight => self.vx[i] = FAN_SPEED,
+                    Cell::FanLeft => self.vx[i] = -FAN_SPEED,
+                    Cell::FanUp => self.vy[i] = -FAN_SPEED,
+                    Cell::FanDown => self.vy[i] = FAN_SPEED,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn step_air(&mut self) {
+        self.inject_fans();
+        let aw = self.air_w;
+        let ah = self.air_h;
+        for ay in 0..ah {
+            for ax in 0..aw {
+                let i = self.air_idx(ax, ay);
+                let ax = ax as isize;
+                let ay = ay as isize;
+                let pv_l = Self::air_sample(&self.pv, aw, ah, ax - 1, ay);
+                let pv_r = Self::air_sample(&self.pv, aw, ah, ax + 1, ay);
+                let pv_u = Self::air_sample(&self.pv, aw, ah, ax, ay - 1);
+                let pv_d = Self::air_sample(&self.pv, aw, ah, ax, ay + 1);
+                let vx_l = Self::air_sample(&self.vx, aw, ah, ax - 1, ay);
+                let vx_r = Self::air_sample(&self.vx, aw, ah, ax + 1, ay);
+                let vy_u = Self::air_sample(&self.vy, aw, ah, ax, ay - 1);
+                let vy_d = Self::air_sample(&self.vy, aw, ah, ax, ay + 1);
+                let nvx = self.vx[i].saturating_add((pv_l - pv_r) / 4);
+                let nvy = self.vy[i].saturating_add((pv_u - pv_d) / 4);
+                let npv = self.pv[i].saturating_add((vx_l - vx_r + vy_u - vy_d) / 4);
+                self.vx_prev[i] = Self::damp_i16(nvx, 7, 8);
+                self.vy_prev[i] = Self::damp_i16(nvy, 7, 8);
+                self.pv_prev[i] = Self::damp_i16(npv, 15, 16);
+            }
+        }
+        std::mem::swap(&mut self.vx, &mut self.vx_prev);
+        std::mem::swap(&mut self.vy, &mut self.vy_prev);
+        std::mem::swap(&mut self.pv, &mut self.pv_prev);
     }
 
     fn next_rand(&mut self) -> u64 {
@@ -262,6 +390,7 @@ impl World {
     /// Advance the simulation by one tick.
     pub fn step(&mut self) {
         self.frame += 1;
+        self.step_air();
         self.clear_moved_in_active_chunks();
         self.next_active.fill(false);
 
@@ -936,6 +1065,42 @@ mod tests {
         assert_eq!(w.get(1, 1), Cell::FanRight);
         w.paint(1, 1, Cell::Empty, 0);
         assert_eq!(w.get(1, 1), Cell::Empty);
+    }
+
+    #[test]
+    fn air_buffers_match_grid() {
+        let w = World::new(320, 200);
+        assert_eq!(w.air_w, 80);
+        assert_eq!(w.air_h, 50);
+        assert_eq!(w.pv().len(), 80 * 50);
+        assert_eq!(w.vx().len(), w.pv().len());
+        assert_eq!(w.vy().len(), w.pv().len());
+    }
+
+    #[test]
+    fn fan_injects_velocity_on_facing_axis() {
+        let mut w = World::new(8, 8);
+        w.paint(0, 0, Cell::FanRight, 0);
+        w.step();
+        let i = w.air_idx_of_for_test(0, 0);
+        assert!(w.vx()[i] > 0, "expected +vx, got {}", w.vx()[i]);
+        assert_eq!(w.vy()[i], 0);
+        assert_eq!(w.get(0, 0), Cell::FanRight);
+    }
+
+    #[test]
+    fn idle_fan_still_blows_after_chunks_sleep() {
+        let mut w = World::new(8, 8);
+        w.paint(0, 0, Cell::FanDown, 0);
+        for _ in 0..8 {
+            w.step();
+        }
+        let i = w.air_idx_of_for_test(0, 0);
+        assert!(
+            w.vy()[i] > 0,
+            "idle fan lost vy (inject skipped sleeping chunk?): {}",
+            w.vy()[i]
+        );
     }
 
     #[test]
