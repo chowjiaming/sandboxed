@@ -19,6 +19,7 @@ pub enum Cell {
     FanUp = 9,
     FanDown = 10,
     Gunpowder = 11,
+    Smoke = 12,
 }
 
 impl Cell {
@@ -36,6 +37,7 @@ impl Cell {
             9 => Some(Cell::FanUp),
             10 => Some(Cell::FanDown),
             11 => Some(Cell::Gunpowder),
+            12 => Some(Cell::Smoke),
             _ => None,
         }
     }
@@ -46,7 +48,7 @@ impl Cell {
             Cell::Empty => 0,
             Cell::Water => 1,
             Cell::Gunpowder | Cell::Sand => 2,
-            Cell::Fire | Cell::Steam => 0,
+            Cell::Fire | Cell::Steam | Cell::Smoke => 0,
             Cell::Stone
             | Cell::Wood
             | Cell::FanRight
@@ -82,6 +84,8 @@ const WOOD_IGNITE: u8 = 80;
 const WATER_BOIL: u8 = 100;
 const STEAM_CONDENSE: u8 = 40;
 const STEAM_PAINT_HEAT: u8 = 120;
+const SMOKE_PAINT_HEAT: u8 = 80;
+const SMOKE_DISPERSE: u8 = 10;
 const CHUNK: usize = 16;
 pub(crate) const AIR_CELL: usize = 4;
 const FAN_SPEED: i16 = 40;
@@ -505,6 +509,7 @@ impl World {
                 self.heat[i] = match cell {
                     Cell::Fire => FIRE_HEAT,
                     Cell::Steam => STEAM_PAINT_HEAT,
+                    Cell::Smoke => SMOKE_PAINT_HEAT,
                     _ => 0,
                 };
                 self.wake(px, py, false);
@@ -634,6 +639,7 @@ impl World {
                             Cell::Water => self.step_water(x, y),
                             Cell::Fire => self.step_fire(x, y),
                             Cell::Steam => self.step_steam(x, y),
+                            Cell::Smoke => self.step_smoke(x, y),
                             _ => {}
                         }
                     }
@@ -763,6 +769,13 @@ impl World {
         self.wake(x, y, true);
     }
 
+    fn become_smoke(&mut self, x: usize, y: usize) {
+        let i = self.idx(x, y);
+        self.cells[i] = Cell::Smoke;
+        self.ttl[i] = 0;
+        self.wake(x, y, true);
+    }
+
     fn step_fire(&mut self, x: usize, y: usize) {
         self.wake(x, y, true);
         if let Some((wx, wy)) = self.first_cardinal(x, y, Cell::Water) {
@@ -777,12 +790,12 @@ impl World {
         self.conduct(x, y);
         let life = self.ttl[i];
         if life <= 1 {
-            self.extinguish(x, y);
+            self.become_smoke(x, y);
             return;
         }
         // Flicker: extra chance to die near the end of life.
         if life <= 4 && self.next_rand() & 7 == 0 {
-            self.extinguish(x, y);
+            self.become_smoke(x, y);
             return;
         }
         self.ttl[i] = life - 1;
@@ -830,6 +843,49 @@ impl World {
             return;
         }
         if self.try_air_push(x, y, GAS_PUSH) {
+            return;
+        }
+        if y == 0 {
+            return;
+        }
+        let above = y - 1;
+        if self.try_move(x, y, x, above) {
+            return;
+        }
+        let left_first = self.next_rand() & 1 == 0;
+        let diagonals: [(isize, usize); 2] = [(-1, above), (1, above)];
+        for k in 0..2 {
+            let (dx, ny) = diagonals[if left_first { k } else { 1 - k }];
+            let nx = x as isize + dx;
+            if nx < 0 {
+                continue;
+            }
+            if self.try_move(x, y, nx as usize, ny) {
+                return;
+            }
+        }
+    }
+
+    fn step_smoke(&mut self, x: usize, y: usize) {
+        self.wake(x, y, true);
+        let i = self.idx(x, y);
+        self.heat[i] = self.heat[i].saturating_sub(1);
+        self.conduct(x, y);
+        let i = self.idx(x, y);
+        if self.cells[i] != Cell::Smoke {
+            return;
+        }
+        if self.heat[i] < SMOKE_DISPERSE {
+            self.cells[i] = Cell::Empty;
+            self.heat[i] = 0;
+            self.ttl[i] = 0;
+            self.wake(x, y, true);
+            return;
+        }
+        if self.try_air_push(x, y, GAS_PUSH) {
+            return;
+        }
+        if !self.frame.is_multiple_of(2) {
             return;
         }
         if y == 0 {
@@ -1182,6 +1238,58 @@ mod tests {
     }
 
     #[test]
+    fn fire_burns_to_smoke_then_empty() {
+        let mut w = World::new(8, 8);
+        w.paint(4, 3, Cell::Fire, 0);
+        let mut saw_smoke = false;
+        for _ in 0..400 {
+            w.step();
+            if count(&w, Cell::Smoke) > 0 {
+                saw_smoke = true;
+            }
+            if saw_smoke && count(&w, Cell::Fire) == 0 && count(&w, Cell::Smoke) == 0 {
+                break;
+            }
+        }
+        assert!(saw_smoke, "isolated fire should leave smoke");
+        assert_eq!(count(&w, Cell::Fire), 0);
+        assert_eq!(count(&w, Cell::Smoke), 0);
+    }
+
+    #[test]
+    fn water_quench_does_not_spawn_smoke() {
+        let mut w = World::new(8, 8);
+        w.paint(3, 4, Cell::Fire, 0);
+        w.paint(4, 4, Cell::Water, 0);
+        for _ in 0..16 {
+            w.step();
+            assert_eq!(count(&w, Cell::Smoke), 0);
+        }
+    }
+
+    #[test]
+    fn smoke_rises_slower_than_steam() {
+        let mut steam = World::new(8, 16);
+        let mut smoke = World::new(8, 16);
+        steam.paint(4, 14, Cell::Steam, 0);
+        smoke.paint(4, 14, Cell::Smoke, 0);
+        for _ in 0..8 {
+            steam.step();
+            smoke.step();
+        }
+        let steam_y = (0..16)
+            .find(|&y| (0..8).any(|x| steam.get(x, y) == Cell::Steam))
+            .expect("steam still present");
+        let smoke_y = (0..16)
+            .find(|&y| (0..8).any(|x| smoke.get(x, y) == Cell::Smoke))
+            .expect("smoke still present");
+        assert!(
+            smoke_y > steam_y,
+            "smoke should lag steam: smoke_y={smoke_y} steam_y={steam_y}"
+        );
+    }
+
+    #[test]
     fn fire_rises() {
         let mut w = World::new(8, 8);
         w.paint(4, 5, Cell::Fire, 0);
@@ -1445,7 +1553,8 @@ mod tests {
         assert_eq!(Cell::from_u8(9), Some(Cell::FanUp));
         assert_eq!(Cell::from_u8(10), Some(Cell::FanDown));
         assert_eq!(Cell::from_u8(11), Some(Cell::Gunpowder));
-        assert_eq!(Cell::from_u8(12), None);
+        assert_eq!(Cell::from_u8(12), Some(Cell::Smoke));
+        assert_eq!(Cell::from_u8(13), None);
     }
 
     #[test]

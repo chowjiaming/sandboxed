@@ -35,6 +35,7 @@ unit-testable with plain `cargo test`.
 | Steam        | Rises; condenses when cool; water boils next to fire    |
 | Fan          | Static; click the swatch to cycle facing; blows gases in that 4×4 |
 | Gunpowder    | Falls like sand; explodes from fire or heat 80                    |
+| Smoke        | Rises slower than steam; leftover from burned-out fire            |
 | Erase / Clear | Remove cells                                           |
 
 ## Quickstart
